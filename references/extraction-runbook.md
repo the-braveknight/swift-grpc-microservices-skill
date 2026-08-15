@@ -42,7 +42,7 @@ Do not extract two contexts into one service solely because their tables current
 
 ## 3. Define and release the contract
 
-1. Add `<Service>Protos` to the shared `<organization>-protos` package.
+1. Add `<Service>Protos` to the shared `<project>-protos` package.
 2. Put files under `Sources/<Service>Protos/<organization>/<service>/v1/`.
 3. Define messages around service capabilities, not database tables. Use RPC names matching business operations.
 4. Include only fields consumers need. Model stable identifiers explicitly.

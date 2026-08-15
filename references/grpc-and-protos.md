@@ -8,10 +8,10 @@
 
 ## Canonical proto package
 
-Store contracts in a separate `<organization>-protos` SwiftPM repository. Give each service its own library target/product and nest proto paths by organization, service, and API version:
+Store contracts in a separate `<project>-protos` SwiftPM repository at `https://github.com/<organization>/<project>-protos.git`. Give each service its own library target/product and nest proto paths by organization, service, and API version:
 
 ```text
-<organization>-protos/
+<project>-protos/
   Package.swift
   Sources/
     CatalogProtos/
@@ -61,7 +61,7 @@ Release and tag the proto package before adding a remote dependency to producer 
 
 ```swift
 .package(
-    url: "https://github.com/<organization>/<organization>-protos.git",
+    url: "https://github.com/<organization>/<project>-protos.git",
     from: "0.1.0"
 )
 ```

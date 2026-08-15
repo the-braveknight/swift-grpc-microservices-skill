@@ -31,7 +31,7 @@ Read these files before changing code:
 6. Start with primitive domain values when sufficient. Introduce value objects only for established invariants or behavior, not architectural ceremony.
 7. Give every service sole ownership of its database. Use unqualified table names and no service-named Postgres schema. Name migrations for the database change without a redundant service prefix.
 8. Put protobuf-to-domain conversions beside the transport feature in semantic `X+Protobuf.swift` files. Do not create generic `Mappings` or `Adapters` directories.
-9. Store canonical `.proto` files only in a shared proto Swift package. Nest them by organization, service, and version. Do not copy schemas into producers or consumers.
+9. Store canonical `.proto` files only in the shared `<project>-protos` Swift package at `https://github.com/<organization>/<project>-protos.git`. Nest proto files by organization, service, and version. Do not copy schemas into producers or consumers.
 10. Use `package` access between targets in one service package. Expose `public` API only from separately consumed packages or established cross-target APIs.
 11. Keep caller-facing use-case protocols and local entities at consumer boundaries. Do not leak generated messages into HTTP handlers or Core business code.
 12. Give every target its direct dependencies in `Package.swift`; never rely on transitive imports.

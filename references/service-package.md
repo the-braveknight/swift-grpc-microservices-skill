@@ -34,7 +34,7 @@ Use this package set for the architecture in this skill. Treat these versions as
 | `grpc-swift-extras` | `2.2.0` | `GRPCServiceLifecycle` adapters |
 | `grpc-swift-protobuf` | `2.4.0` | `GRPCProtobuf` and `GRPCProtobufGenerator` |
 | `swift-protobuf` | `1.32.0` | `SwiftProtobuf` messages and well-known types |
-| shared organization proto package | first compatible release, such as `0.1.0` | `<Service>Protos` |
+| shared `<project>-protos` package | first compatible release, such as `0.1.0` | `<Service>Protos` |
 | `swift-container-plugin` | `1.3.0` | `build-container-image` command plugin |
 
 Declare them at package level:
@@ -53,7 +53,7 @@ dependencies: [
     .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.4.0"),
     .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.32.0"),
     .package(
-        url: "https://github.com/<organization>/<organization>-protos.git",
+        url: "https://github.com/<organization>/<project>-protos.git",
         from: "0.1.0"
     ),
     .package(url: "https://github.com/apple/swift-container-plugin.git", from: "1.3.0"),
@@ -151,7 +151,7 @@ targets: [
             .product(name: "GRPCCore", package: "grpc-swift-2"),
             .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
             .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-            .product(name: "<Service>Protos", package: "<organization>-protos")
+            .product(name: "<Service>Protos", package: "<project>-protos")
         ]
     ),
     .executableTarget(
