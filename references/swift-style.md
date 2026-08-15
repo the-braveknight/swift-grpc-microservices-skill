@@ -38,6 +38,7 @@ Order imports alphabetically by module name after any conditional Foundation blo
 - Use trailing commas in multiline arrays and manifest dependency lists where the surrounding manifest does.
 - Break multiline initializers one argument per line.
 - Place the opening brace on the declaration line.
+- Keep a type declaration and its qualified protocol conformances on one line; do not split the protocol name or put the opening brace on a separate line.
 - Use a single blank line between logical blocks and declarations.
 - Avoid trailing whitespace and whitespace-only lines.
 - Keep lines readable, but do not mechanically wrap a generic `where` clause if the established code keeps the signature on one line.
@@ -82,5 +83,21 @@ Do not use `T : Sendable` or move the constraint to a trailing `where` unless re
 - Keep feature-specific mocks `private` at the bottom of the test file.
 
 ## Formatting verification
+
+Use this `.swift-format` baseline when the repository does not already provide one:
+
+```json
+{
+    "version": 1,
+    "indentConditionalCompilationBlocks": false,
+    "lineLength": 400,
+    "indentation": {
+        "spaces": 4
+    }
+}
+```
+
+`indentConditionalCompilationBlocks` must remain `false` so conditional
+`FoundationEssentials` and `Foundation` imports stay flush-left.
 
 Use the repository's formatter if it has configuration or a formatting command. Otherwise, inspect changed Swift files and use `swift format lint --strict` only if the installed Swift toolchain and existing project support it. Do not introduce a new formatting tool or reformat unrelated files during extraction.

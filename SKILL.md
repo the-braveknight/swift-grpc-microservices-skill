@@ -30,7 +30,7 @@ Read these files before changing code:
 5. Let repositories or the database stamp persistence-owned dates. Use a database default such as `DEFAULT NOW()` in Postgres. Do not inject a `now` closure into a use case.
 6. Start with primitive domain values when sufficient. Introduce value objects only for established invariants or behavior, not architectural ceremony.
 7. Give every service sole ownership of its database. Use unqualified table names and no service-named Postgres schema. Name migrations for the database change without a redundant service prefix.
-8. Put protobuf-to-domain conversions beside the transport feature in semantic `X+Protobuf.swift` files. Do not create generic `Mappings` or `Adapters` directories.
+8. Put protobuf conversions in the transport feature's `Protobuf/` directory using semantic `X+Protobuf.swift` names. Keep the generated-service conformance at the feature root. Do not create generic `Mappings` or `Adapters` directories.
 9. Store canonical `.proto` files only in the shared `<project>-protos` Swift package at `https://github.com/<organization>/<project>-protos.git`. Nest proto files by organization, service, and version. Do not copy schemas into producers or consumers.
 10. Use `package` access between targets in one service package. Expose `public` API only from separately consumed packages or established cross-target APIs.
 11. Keep caller-facing use-case protocols and local entities at consumer boundaries. Do not leak generated messages into HTTP handlers or Core business code.
@@ -64,7 +64,7 @@ Read these files before changing code:
 3. Implement feature-first Core entities, commands, repositories, context protocols, use-case contracts, typed errors, and use cases.
 4. Write Core tests with test-local `MockDatabase` and repository doubles. Run them before introducing infrastructure.
 5. Implement Postgres database/context, prepared statements, repositories, constraints, error translation, and ordered migrations.
-6. Implement generated gRPC service protocols and colocated `+Protobuf` conversions.
+6. Implement generated gRPC service protocols and feature-local `Protobuf/` conversion directories.
 7. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
 8. Add `.env.example`, container build support, and Compose services for Postgres, migration, and the service.
 9. Build and test the complete package, then exercise contracts and infrastructure boundaries.

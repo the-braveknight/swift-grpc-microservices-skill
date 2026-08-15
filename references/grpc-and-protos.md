@@ -100,10 +100,10 @@ Translate request messages to use-case inputs. Translate typed failures explicit
 
 Keep stable, non-sensitive messages. Do not expose database errors.
 
-Place entity/message conversion in the feature folder:
+Keep the service implementation at the feature root. Put conversions in a feature-local `Protobuf/` directory:
 
 ```swift
-// Sources/CatalogGRPC/Items/Item+Protobuf.swift
+// Sources/CatalogGRPC/Items/Protobuf/Item+Protobuf.swift
 extension Example_Catalog_V1_Item {
     init(item: Item) {
         self.init()
@@ -113,7 +113,18 @@ extension Example_Catalog_V1_Item {
 }
 ```
 
-Do not mark the conversion extension `private` when another file in the GRPC target calls it. Do not create `Mappings` or `Adapters` folders.
+Map each protobuf request to its use-case input in a semantic `XUseCaseInput+Protobuf.swift` file. Perform transport validation, such as UUID parsing, integer range checks, enum recognition, and timestamp conversion, in that initializer instead of adding generic free helper functions to the service implementation:
+
+```swift
+// Sources/CatalogGRPC/Items/Protobuf/CreateItemUseCaseInput+Protobuf.swift
+extension CreateItemUseCaseInput {
+    init(request: Example_Catalog_V1_CreateItemRequest) throws {
+        self.init(identifier: request.identifier)
+    }
+}
+```
+
+Do not mark a conversion extension `private` when another file in the GRPC target calls it. Use only one `Protobuf/` level per feature; do not add request/response subdivisions or generic `Mappings` and `Adapters` folders.
 
 ## Consumer adapter
 

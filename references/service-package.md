@@ -115,8 +115,10 @@ Sources/
         List<Entities>Statement.swift
   <Service>GRPC/
     <Features>/
-      <Entity>+Protobuf.swift
       <Entity>Service.swift
+      Protobuf/
+        <Entity>+Protobuf.swift
+        Create<Entity>UseCaseInput+Protobuf.swift
 Tests/
   <Service>CoreTests/
     MockDatabase.swift
@@ -127,6 +129,8 @@ Tests/
 ```
 
 Use plural feature folders such as `Items`, then group repository and use-case artifacts within that feature. Do not create top-level `Entities`, `UseCases`, or `Repositories` buckets in Core. In Postgres, group by technical responsibility and then entity because those files implement infrastructure mechanics.
+
+In GRPC, keep the generated-service conformance at the feature root. Put every request/input and entity/message conversion in that feature's single `Protobuf/` directory. Do not split it further into request and response folders.
 
 ## Manifest shape
 
