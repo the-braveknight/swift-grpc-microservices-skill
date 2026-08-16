@@ -27,14 +27,12 @@ import Foundation
 #endif
 ```
 
-Tests may use `import Foundation` directly, following the current Core tests.
-
 Order imports alphabetically by module name after any conditional Foundation block. Put one blank line between a conditional import block and other imports. Do not retain unused imports.
 
 ## Layout
 
 - Indent with four spaces; never tabs in Swift.
-- Put one declaration per file, except tightly related private test doubles or tiny conversion extensions.
+- Put one declaration per file, except tiny, tightly related conversion extensions.
 - Use trailing commas in multiline arrays and manifest dependency lists where the surrounding manifest does.
 - Break multiline initializers one argument per line.
 - Place the opening brace on the declaration line.
@@ -72,15 +70,6 @@ Do not use `T : Sendable` or move the constraint to a trailing `where` unless re
 - Catch named enum cases directly: `catch ItemRepositoryError.duplicateIdentifier`.
 - End with a deliberate catch-all mapping when the public typed error includes `.unknown`.
 - Do not log in Core use cases unless logging is itself an explicit application port; log at executable, transport, or infrastructure boundaries.
-
-## Tests
-
-- Use `@Suite` and `@Test` without display strings unless the suite already uses them.
-- Name tests as behavior phrases: `createsItem`, `rejectsEmptyIdentifier`, `mapsRepositoryError`.
-- Arrange, blank line, act, blank line, assert.
-- Use `#expect` for values and `try await #require(throws: ExactError.case) { ... }` for exact failures.
-- Do not bind an error only to compare it.
-- Keep feature-specific mocks `private` at the bottom of the test file.
 
 ## Formatting verification
 

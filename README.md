@@ -5,9 +5,8 @@ A Codex skill for designing and building production Swift gRPC microservices and
 The skill standardizes:
 
 - SwiftPM module names, dependency direction, and target boundaries
-- the tested Swift package dependency and version baseline
+- the supported Swift package dependency and version baseline
 - feature-first Core organization with `XUseCase`, `XRepository`, and `XCommand` conventions
-- fast Core tests using test-local `Database` and repository mocks
 - Postgres repositories, prepared statements, transactions, and migrations
 - versioned protobuf packages and grpc-swift producer/consumer boundaries
 - executable composition roots, configuration, lifecycle management, and migrations

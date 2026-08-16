@@ -10,7 +10,6 @@ Use a service-oriented SwiftPM package, not textbook layer names. The package is
 ├── <Service>Postgres ─────→ <Service>Core
 └── <Service>GRPC ─────────→ <Service>Core
 
-<Service>CoreTests ────────→ <Service>Core
 ```
 
 Use these exact responsibilities:
@@ -21,7 +20,6 @@ Use these exact responsibilities:
 | `<Service>Postgres` | Postgres context/database, repositories, prepared statements, migrations | Business validation, RPC mapping, CLI parsing |
 | `<Service>GRPC` | Generated-service conformances, request/input mapping, domain/protobuf mapping, RPC error translation | SQL, environment reading, server construction |
 | `<Service>` | ArgumentParser command tree, environment configuration, logging, dependency construction, server/client construction, lifecycle | Reusable business rules |
-| `<Service>CoreTests` | Use-case tests and local mocks | Imports of Postgres, grpc-swift, protobuf, configuration, logging, or the executable |
 
 Keep dependencies pointing inward. Core has no dependency on another service's implementation. If Core genuinely needs an external type as part of an application port, depend only on the smallest contract library and document why; do not import an entire infrastructure SDK for convenience.
 
@@ -50,7 +48,7 @@ Use protocols where they enable a real seam:
 - Use-case protocols let transports and callers depend on behavior.
 - Repository protocols let Core depend on persistence capabilities.
 - Per-use-case context protocols expose only the repositories a use case needs.
-- `Database` lets the use case select connection versus transaction semantics and makes Core tests fast.
+- `Database` lets the use case select connection versus transaction semantics while keeping Core decoupled from persistence.
 
 Do not add a protocol merely to mirror every concrete type. Keep entities and command values as structs. Keep configuration and composition concrete at the executable root.
 

@@ -1,11 +1,11 @@
 ---
 name: swift-grpc-microservices-skill
-description: Design, build, test, deploy, and evolve production Swift gRPC microservices and distributed systems using strict reusable module and code conventions. Use when creating a service or multi-service system from scratch, defining service boundaries and communication patterns, structuring SwiftPM packages, designing versioned protobuf contracts, implementing Postgres ownership and transactions, wiring grpc-swift clients or servers, preserving XUseCase/XRepository/XCommand boundaries, building infrastructure-free Swift Testing suites, adding composition roots and Docker Compose deployment, or extracting bounded contexts from a modular monolith.
+description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems using strict reusable module and code conventions. Use when creating a service or multi-service system from scratch, defining service boundaries and communication patterns, structuring SwiftPM packages, designing versioned protobuf contracts, implementing Postgres ownership and transactions, wiring grpc-swift clients or servers, preserving XUseCase/XRepository/XCommand boundaries, adding composition roots and Docker Compose deployment, or extracting bounded contexts from a modular monolith.
 ---
 
 # Swift gRPC Microservices
 
-Use this skill as an end-to-end architecture and implementation specification for greenfield Swift distributed systems, individual microservices, and modular-monolith extractions. Preserve its naming, module boundaries, folder structure, composition roots, formatting, test style, and deployment topology unless the user explicitly changes a convention.
+Use this skill as an end-to-end architecture and implementation specification for greenfield Swift distributed systems, individual microservices, and modular-monolith extractions. Preserve its naming, module boundaries, folder structure, composition roots, formatting, and deployment topology unless the user explicitly changes a convention.
 
 ## Load the required references
 
@@ -14,7 +14,7 @@ Read these files before changing code:
 - Read [architecture.md](references/architecture.md) for every task.
 - Read [swift-style.md](references/swift-style.md) before creating or editing Swift.
 - Read [service-package.md](references/service-package.md) when creating or reshaping a service package.
-- Read [core-and-testing.md](references/core-and-testing.md) when implementing entities, repositories, commands, use cases, contexts, or tests.
+- Read [core.md](references/core.md) when implementing entities, repositories, commands, use cases, or contexts.
 - Read [persistence.md](references/persistence.md) when implementing Postgres, transactions, statements, repositories, or migrations.
 - Read [grpc-and-protos.md](references/grpc-and-protos.md) when defining contracts or implementing producer and consumer transports.
 - Read [composition-and-deployment.md](references/composition-and-deployment.md) when wiring executables, configuration, lifecycle, containers, or Compose.
@@ -23,9 +23,9 @@ Read these files before changing code:
 
 ## Follow the governing rules
 
-1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`; never substitute `Domain`, `Application`, or `Infrastructure`. Do not add an in-memory production target merely for tests.
+1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`; never substitute `Domain`, `Application`, or `Infrastructure`.
 2. Use `XUseCase`, `XUseCaseProtocol`, `XUseCaseInput`, `XUseCaseError`, `XUseCaseContext`, `XRepository`, `XRepositoryError`, and repository-facing `XCommand` names.
-3. Keep Core independently buildable and fast-testable. It must not import Postgres, gRPC, protobuf, logging, configuration, or server libraries.
+3. Keep Core independently buildable. It must not import Postgres, gRPC, protobuf, logging, configuration, or server libraries.
 4. Keep the `Database` protocol in Core. Use `withConnection` for a single repository operation and `withTransaction` only for a multi-operation atomic use case. Never hold a database transaction across an RPC.
 5. Let repositories or the database stamp persistence-owned dates. Use a database default such as `DEFAULT NOW()` in Postgres. Do not inject a `now` closure into a use case.
 6. Start with primitive domain values when sufficient. Introduce value objects only for established invariants or behavior, not architectural ceremony.
@@ -54,24 +54,23 @@ Read these files before changing code:
 3. Choose local calls, synchronous gRPC, asynchronous events, or durable workflow coordination per interaction. Document why each remote boundary exists.
 4. Define versioned contracts and failure semantics before implementing consumers and producers.
 5. Create the shared proto package, then initialize each independently deployable service with the required SwiftPM target structure.
-6. Build vertical capabilities through Core, Postgres, gRPC, executable composition, tests, and deployment rather than creating empty horizontal layers across every service.
-7. Add deadlines, idempotency, retry rules, observability, health behavior, security, deployment ordering, and failure tests in proportion to the system requirements.
+6. Build vertical capabilities through Core, Postgres, gRPC, executable composition, and deployment rather than creating empty horizontal layers across every service.
+7. Add deadlines, idempotency, retry rules, observability, health behavior, security, deployment ordering, and failure handling in proportion to the system requirements.
 
 ## Build a service
 
 1. Always run `swift package init --type executable` before adding targets, folders, or code.
-2. Reshape the package to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, `<Service>`, and `<Service>CoreTests`.
+2. Reshape the package to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`.
 3. Implement feature-first Core entities, commands, repositories, context protocols, use-case contracts, typed errors, and use cases.
-4. Write Core tests with test-local `MockDatabase` and repository doubles. Run them before introducing infrastructure.
-5. Implement Postgres database/context, prepared statements, repositories, constraints, error translation, and ordered migrations.
-6. Implement generated gRPC service protocols and feature-local `Protobuf/` conversion directories.
-7. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
-8. Add `.env.example`, container build support, and Compose services for Postgres, migration, and the service.
-9. Build and test the complete package, then exercise contracts and infrastructure boundaries.
+4. Implement Postgres database/context, prepared statements, repositories, constraints, error translation, and ordered migrations.
+5. Implement generated gRPC service protocols and feature-local `Protobuf/` conversion directories.
+6. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
+7. Add `.env.example`, container build support, and Compose services for Postgres, migration, and the service.
+8. Build the complete package, then exercise contracts and infrastructure boundaries.
 
 ## Extract an existing bounded context
 
-1. Inspect repository instructions, dirty state, package graph, callers, persistence, migrations, jobs, configuration, tests, and deployment.
+1. Inspect repository instructions, dirty state, package graph, callers, persistence, migrations, jobs, configuration, and deployment.
 2. Trace the bounded context end to end and identify cross-context reads, transactions, shared types, and compatibility seams.
 3. Define and release the versioned contract, build the producer as a standalone service, then preserve the consumer-facing use-case protocol while replacing its implementation with a gRPC client.
 4. Construct one long-lived client in the consumer composition root and run it in `ServiceGroup`.
@@ -82,7 +81,6 @@ Read these files before changing code:
 
 Do not call a service or system complete until all applicable gates pass:
 
-- Core tests import only Core plus standard testing utilities.
 - Every service package builds under Swift 6 language mode.
 - Generated protobuf types appear only in proto, transport, and client-boundary code.
 - Postgres types appear only in Postgres and executable composition code.

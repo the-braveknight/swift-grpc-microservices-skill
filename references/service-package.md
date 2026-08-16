@@ -19,7 +19,7 @@ Then reshape the generated package. Keep Swift tools 6.3, Swift language mode 6,
 
 ## Dependency baseline
 
-Use this package set for the architecture in this skill. Treat these versions as the tested baseline, not an instruction to downgrade a repository that already uses compatible newer releases.
+Use this package set for the architecture in this skill. Treat these versions as the supported baseline, not an instruction to downgrade a repository that already uses compatible newer releases.
 
 | Package | Baseline | Products/purpose |
 | --- | --- | --- |
@@ -119,13 +119,6 @@ Sources/
       Protobuf/
         <Entity>+Protobuf.swift
         Create<Entity>UseCaseInput+Protobuf.swift
-Tests/
-  <Service>CoreTests/
-    MockDatabase.swift
-    <Features>/
-      UseCases/
-        Create<Entity>/
-          Create<Entity>UseCaseTests.swift
 ```
 
 Use plural feature folders such as `Items`, then group repository and use-case artifacts within that feature. Do not create top-level `Entities`, `UseCases`, or `Repositories` buckets in Core. In Postgres, group by technical responsibility and then entity because those files implement infrastructure mechanics.
@@ -174,10 +167,6 @@ targets: [
             .product(name: "PostgresNIO", package: "postgres-nio"),
             .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
         ]
-    ),
-    .testTarget(
-        name: "<Service>CoreTests",
-        dependencies: ["<Service>Core"]
     ),
 ],
 swiftLanguageModes: [.v6]

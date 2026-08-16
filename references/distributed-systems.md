@@ -11,7 +11,6 @@ Use this reference when designing more than one service, introducing a remote de
 - Reliability and failure semantics
 - Security and trust boundaries
 - Observability and operations
-- Testing strategy
 - Greenfield delivery sequence
 
 ## Design inputs and service boundaries
@@ -141,22 +140,6 @@ Use graceful shutdown signals and lifecycle management. Stop accepting work, all
 
 Define alerts from user-impacting symptoms and service objectives, not every logged error.
 
-## Testing strategy
-
-Use a layered test portfolio:
-
-| Layer | Scope |
-| --- | --- |
-| Core unit tests | Use cases with test-local `MockDatabase` and repository doubles |
-| Persistence tests | Prepared statements, constraints, error mapping, and migrations against Postgres |
-| Transport tests | Request/response conversion and typed error to gRPC status mapping |
-| Contract compatibility | Proto generation and producer/consumer version compatibility |
-| Service integration | Real client/server transport with controlled infrastructure |
-| System tests | Critical workflows across deployed services |
-| Failure tests | Deadlines, dependency unavailability, retries, duplicates, and restart behavior |
-
-Keep the fast Core suite independent of infrastructure and run it first. Add slower suites only where they prove a boundary the unit suite cannot.
-
 ## Greenfield delivery sequence
 
 1. Write the capability map, service ownership table, interaction map, and non-functional requirements.
@@ -164,7 +147,7 @@ Keep the fast Core suite independent of infrastructure and run it first. Add slo
 3. Define the first vertical user journey and the contracts it needs.
 4. Create and release the shared proto package.
 5. Initialize each required SwiftPM service package with `swift package init --type executable`.
-6. Build the owning service from Core tests outward through Postgres, gRPC, composition, and deployment.
+6. Build the owning service from Core outward through Postgres, gRPC, composition, and deployment.
 7. Build consumers against their local use-case protocols and generated clients.
 8. Add dedicated databases, migration jobs, private networking, secrets, lifecycle, and observability.
 9. Verify the first journey end to end, including dependency failure and retry/idempotency behavior.
