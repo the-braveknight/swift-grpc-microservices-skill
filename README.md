@@ -8,6 +8,7 @@ The skill standardizes:
 - the supported Swift package dependency and version baseline
 - feature-first Core organization with `XUseCase`, `XRepository`, and `XCommand` conventions
 - Postgres repositories, prepared statements, transactions, and migrations
+- database-owned UUIDv7 identifiers that are omitted from caller create inputs
 - versioned protobuf packages and grpc-swift producer/consumer boundaries
 - executable composition roots, configuration, lifecycle management, and migrations
 - durable Temporal workflows, Activities, signals, queries, clients, and worker composition

@@ -72,6 +72,8 @@ Generated protobuf values are transport DTOs. Map them at service/client boundar
 
 Give every service an exclusive database and migration history. Other services use contracts, never SQL access, shared tables, or foreign keys across service databases.
 
+Identifier ownership follows data ownership. The database that owns the canonical entity generates its UUIDv7 identifier. Create contracts omit that identifier, and consumers store the returned foreign identifier only after successful creation. A pending process in another service uses its own locally generated record identifier; it must not reserve the future canonical identifier.
+
 Classify each invariant:
 
 - Keep a strong invariant inside one service and one local transaction.
@@ -106,7 +108,7 @@ Treat every network call as fallible:
 
 Add circuit breaking, load shedding, bulkheads, caching, or hedging only when measured failure/latency patterns justify them. Keep resilience policy at the caller or transport boundary, not in Core business entities.
 
-For mutations, define a request identity when clients may retry after an ambiguous timeout. Store enough state in the owning service to return the prior outcome safely.
+For mutations, define a request identity when clients may retry after an ambiguous timeout. Namespace the key by caller and operation, keep it stable across attempts, and store enough state in the owning service to return the prior outcome safely. The same key with the same canonical input repeats the original effect; the same key with different input is a permanent conflict; a different key still obeys ordinary business uniqueness. Never treat possession of the key as caller authorization.
 
 ## Security and trust boundaries
 

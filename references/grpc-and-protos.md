@@ -40,6 +40,17 @@ package example.catalog.v1;
 
 Keep `v1` even for the first release. Make compatible additions within `v1`; create `v2` for breaking API changes. Never reuse removed field numbers or rename package identity casually.
 
+For create operations, omit the entity identifier from the request when the service owns that entity. Let the owning database generate it and return it in the response entity. Keep identifiers as protobuf strings on the wire and parse or format UUIDs at the transport boundary. Do not let a caller choose an owned entity identifier merely to make retries convenient; define a separate `idempotency_key` when the mutation can be retried:
+
+```proto
+message CreateItemRequest {
+  string name = 1;
+  string idempotency_key = 2;
+}
+```
+
+Treat `idempotency_key` as required through producer validation even though proto3 strings default to empty. Name it for its transport semantics rather than leaking a caller concept such as `registration_id`. Each caller generates or derives one stable, namespaced key per logical operation and reuses it across retries. The key is not a secret, caller authentication, or permission to perform the mutation.
+
 Each target uses the `GRPCProtobufGenerator` plugin and this generator configuration:
 
 ```json
@@ -93,6 +104,7 @@ Translate request messages to use-case inputs. Translate typed failures explicit
 | --- | --- |
 | invalid input | `.invalidArgument` |
 | duplicate/conflict | `.alreadyExists` |
+| idempotency key reused with different input | `.failedPrecondition` |
 | missing entity | `.notFound` |
 | authentication failure | `.unauthenticated` |
 | authorization failure | `.permissionDenied` |
@@ -155,4 +167,4 @@ Catch `RPCError` and map known status codes to the existing local use-case error
 
 Construct one long-lived `GRPCClient` in the consuming executable, wrap it in generated service clients inside the consumer implementation, inject it, and add it to `ServiceGroup`. Do not create a client per request.
 
-Use deadlines/retry policy only from explicit latency and idempotency requirements. Never automatically retry a non-idempotent mutation without a contract-level idempotency design.
+Use deadlines/retry policy only from explicit latency and idempotency requirements. Never automatically retry a non-idempotent mutation without a contract-level idempotency design. Generate or derive the key once outside the retry loop; do not produce a new key for each attempt.

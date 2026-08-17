@@ -95,9 +95,15 @@ package struct ReservationActivities {
 }
 ```
 
-Nest Activity input values under the container and use `Id`, not `ID`, in Swift property and parameter names. Use `creationDate`, `expiryDate`, and similar noun-based date names; do not use `createdAt`, `expiresAt`, or other `somethingAt` names.
+Nest Activity input values under the container and use `Id`, not `ID`, in Swift property and parameter names. Use `creationDate`, `expirationDate`, and similar noun-based date names; do not use `createdAt`, `expiresAt`, `expiryDate`, or other `somethingAt` names.
 
-Assume every Activity can be retried. Enforce idempotency with stable business identifiers, database constraints, conditional updates, or an external provider's idempotency key. Do not rely on in-memory flags.
+Assume every Activity can be retried after its side effect succeeds but before Temporal receives the result. Make each write retry-safe at the system that owns the side effect: use unique constraints for creates, expected-state conditional updates for transitions, and provider idempotency keys for email, payments, or messaging. Do not rely on Workflow fields, Activity memory, or Temporal history as the downstream idempotency mechanism.
+
+Derive a stable, namespaced idempotency key from immutable Workflow input or a caller-owned pending-record identifier, such as `authentication-registration-<registrationId>`. Reuse the exact key on every Activity attempt; never generate a UUID inside Workflow code or per Activity retry. Pass the key through the Core Activity service port and remote mutation contract.
+
+The receiving service must atomically guarantee that the same key and canonical input returns the original result, including its database-generated entity ID, while the same key with different input produces a permanent idempotency conflict. Map that conflict to a non-retryable Activity failure. Do not treat an idempotency key as authentication or proof that a preceding workflow step occurred.
+
+Do not generate or preallocate an entity identifier owned by another service. Pass the caller-owned workflow or pending-record identifier through the Workflow, let the owning service return its database-generated identifier during Activity execution, then persist that returned foreign identifier through retry-safe local Activity work. Require an owner-supported idempotency key for a remotely retried create. Do not convert `ALREADY_EXISTS` into success by looking up a business key such as email; distinct logical operations can carry identical business data.
 
 Configure explicit Activity timeouts and retries. Leave dependency outages retryable. Translate invalid state, conflicting canonical data, and permanent consistency failures to non-retryable `ApplicationError` values at the Activity boundary. Do not catch `ActivityError` in Workflow code merely to inspect `ApplicationError.type` strings; model the operation so permanent failures can fail the Workflow cleanly.
 
@@ -171,13 +177,15 @@ package func currentState(input: Void) throws -> ReservationWorkflowState {
 
 Signals mutate small deterministic Workflow fields. Queries return current Workflow state without causing side effects. Keep persisted business state and `XWorkflowState` separate; give each only the cases its owner needs.
 
+A signal-only RPC cannot return an identifier that a later Activity has not created yet. Return an empty acknowledgement from that RPC and expose the generated identifier only through the owning service or a later query/result boundary. Do not pre-generate the identifier merely to populate the signal response.
+
 ## Timers and cancellation
 
 For an expiring condition, use `WorkflowContext.timeout` with `condition`:
 
 ```swift
 let confirmed = try await context.timeout(
-    for: .seconds(expiryDate.timeIntervalSince(context.now))
+    for: .seconds(expirationDate.timeIntervalSince(context.now))
 ) {
     do {
         try await context.condition { $0.confirmed }
