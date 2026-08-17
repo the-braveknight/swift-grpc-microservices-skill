@@ -34,6 +34,7 @@ Use this package set for the architecture in this skill. Treat these versions as
 | `grpc-swift-extras` | `2.2.0` | `GRPCServiceLifecycle` adapters |
 | `grpc-swift-protobuf` | `2.4.0` | `GRPCProtobuf` and `GRPCProtobufGenerator` |
 | `swift-protobuf` | `1.32.0` | `SwiftProtobuf` messages and well-known types |
+| `swift-temporal-sdk` | `1.0.0` | `Temporal` Workflows, Activities, clients, and workers when durable orchestration is required |
 | shared `<project>-protos` package | first compatible release, such as `0.1.0` | `<Service>Protos` |
 | `swift-container-plugin` | `1.3.0` | `build-container-image` command plugin |
 
@@ -52,6 +53,7 @@ dependencies: [
     .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "2.2.0"),
     .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.4.0"),
     .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.32.0"),
+    .package(url: "https://github.com/apple/swift-temporal-sdk.git", from: "1.0.0"), // only with Temporal
     .package(
         url: "https://github.com/<organization>/<project>-protos.git",
         from: "0.1.0"
@@ -80,6 +82,8 @@ Sources/
         Migrate.swift
     Serve/
       Serve.swift
+    Worker/
+      Worker.swift                 # only with Temporal
   <Service>Core/
     Database/
       Database.swift
@@ -119,11 +123,18 @@ Sources/
       Protobuf/
         <Entity>+Protobuf.swift
         Create<Entity>UseCaseInput+Protobuf.swift
+  <Service>Workflows/              # only with Temporal
+    <Feature>/
+      <Feature>Workflow.swift
+      <Feature>Activities.swift
+      Temporal<Feature>WorkflowClient.swift
 ```
 
 Use plural feature folders such as `Items`, then group repository and use-case artifacts within that feature. Do not create top-level `Entities`, `UseCases`, or `Repositories` buckets in Core. In Postgres, group by technical responsibility and then entity because those files implement infrastructure mechanics.
 
 In GRPC, keep the generated-service conformance at the feature root. Put every request/input and entity/message conversion in that feature's single `Protobuf/` directory. Do not split it further into request and response folders.
+
+When Temporal is required, keep its SDK dependency and all macro-decorated Workflows and Activities in `<Service>Workflows`. Keep Core free of Temporal by defining the workflow-client and Activity-service protocols plus workflow state/result values there.
 
 ## Manifest shape
 
@@ -151,12 +162,20 @@ targets: [
             .product(name: "<Service>Protos", package: "<project>-protos")
         ]
     ),
+    .target(
+        name: "<Service>Workflows",
+        dependencies: [
+            "<Service>Core",
+            .product(name: "Temporal", package: "swift-temporal-sdk"),
+        ]
+    ), // only with Temporal
     .executableTarget(
         name: "<Service>",
         dependencies: [
             "<Service>Core",
             "<Service>GRPC",
             "<Service>Postgres",
+            "<Service>Workflows", // only with Temporal
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
             .product(name: "Configuration", package: "swift-configuration"),
             .product(name: "GRPCCore", package: "grpc-swift-2"),
@@ -166,6 +185,7 @@ targets: [
             .product(name: "PostgresMigrations", package: "postgres-migrations"),
             .product(name: "PostgresNIO", package: "postgres-nio"),
             .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+            .product(name: "Temporal", package: "swift-temporal-sdk"), // only with Temporal
         ]
     ),
 ],

@@ -10,6 +10,7 @@ The skill standardizes:
 - Postgres repositories, prepared statements, transactions, and migrations
 - versioned protobuf packages and grpc-swift producer/consumer boundaries
 - executable composition roots, configuration, lifecycle management, and migrations
+- durable Temporal workflows, Activities, signals, queries, clients, and worker composition
 - service boundaries, communication choices, consistency, resilience, security, and observability
 - PostgreSQL 18 and Docker Compose deployment topology
 - staged data migration, rollout, and monolith retirement
@@ -33,4 +34,4 @@ Invoke the skill explicitly in a Codex request:
 Use $swift-grpc-microservices-skill to design and build a production-ready distributed ordering system in Swift.
 ```
 
-The skill can also create a single service, define protobuf contracts, implement gRPC integrations, establish Postgres ownership, build composition roots, design service communication, or safely decompose an existing monolith.
+The skill can also create a single service, define protobuf contracts, implement gRPC integrations, establish Postgres ownership, coordinate durable Temporal workflows, build composition roots, design service communication, or safely decompose an existing monolith.

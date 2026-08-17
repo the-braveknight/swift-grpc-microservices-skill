@@ -1,4 +1,4 @@
 interface:
   display_name: "Swift gRPC Microservices"
-  short_description: "Build Swift microservices and distributed systems"
-  default_prompt: "Use $swift-grpc-microservices-skill to design and build a production-ready Swift gRPC distributed system."
+  short_description: "Build Swift gRPC and Temporal microservices"
+  default_prompt: "Use $swift-grpc-microservices-skill to design and build a production-ready Swift gRPC system with durable Temporal workflows where required."

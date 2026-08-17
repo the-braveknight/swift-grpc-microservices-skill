@@ -5,6 +5,7 @@
 - Command tree
 - Environment configuration
 - Serve composition root
+- Temporal worker composition root
 - Migration composition root
 - Container build
 - Docker Compose topology
@@ -16,6 +17,7 @@ Name the executable target after the service, not `<Service>Server`. Make the ro
 ```text
 catalog                 # defaults to serve
 catalog serve
+catalog worker          # only when the service uses Temporal
 catalog database migrate
 ```
 
@@ -27,6 +29,7 @@ struct Catalog: AsyncParsableCommand {
         abstract: "Catalog Service",
         subcommands: [
             Serve.self,
+            Worker.self,
             Database.self
         ],
         defaultSubcommand: Serve.self
@@ -35,6 +38,8 @@ struct Catalog: AsyncParsableCommand {
 ```
 
 Put commands in `<Service>/<Command>/`, except the small root `Database.swift` at `<Service>/Database/Database.swift` with `Migrate` nested below it.
+
+Register `Worker.self` as a root subcommand when the package uses Temporal. Keep `serve` as the default subcommand.
 
 ## Environment configuration
 
@@ -71,6 +76,10 @@ POSTGRES_PASSWORD=catalog
 POSTGRES_DB=catalog
 GRPC_SERVER_HOST=0.0.0.0
 GRPC_SERVER_PORT=50051
+TEMPORAL_HOST=localhost
+TEMPORAL_PORT=7233
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TASK_QUEUE=catalog
 LOG_LEVEL=info
 ```
 
@@ -121,6 +130,34 @@ let serviceGroup = ServiceGroup(
 
 Use plaintext on the private Docker/platform network when ingress terminates TLS. Add end-to-end or mutual TLS only when the deployment trust model requires it.
 
+When the service uses Temporal, construct one long-lived `TemporalClient` in `serve`, inject a `<Feature>WorkflowClient` adapter into Core use cases, and include the client in `ServiceGroup`. Do not run workflow definitions or Activity implementations in the gRPC server process.
+
+## Temporal worker composition root
+
+Run Temporal execution from the executable's `Worker.self` subcommand. Follow the same Configuration, Logging, Infrastructure, Composition, and Lifecycle section order as `serve`.
+
+Construct the databases and remote clients required by Activities once, compose the Core Activity service, then create one `TemporalWorker`:
+
+```swift
+let temporalWorker = try TemporalWorker(
+    configuration: .init(
+        namespace: temporalConfig.string(forKey: "namespace", default: "default"),
+        taskQueue: temporalConfig.string(forKey: "taskQueue", default: "catalog"),
+        instrumentation: .init(serverHostname: temporalHost)
+    ),
+    target: .dns(
+        host: temporalHost,
+        port: temporalConfig.int(forKey: "port", default: 7233)
+    ),
+    transportSecurity: .plaintext,
+    activityContainers: ReservationActivities(service: activityService),
+    workflows: [ReservationWorkflow.self],
+    logger: logger
+)
+```
+
+Add the worker and every long-lived dependency used by Activities to one `ServiceGroup`. Do not add a five-second registration scanner or another periodic database-to-Temporal reconciliation service. Temporal owns durable workflow execution.
+
 ## Migration composition root
 
 The migration command uses the same configuration extension and logging system. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
@@ -166,7 +203,8 @@ For each extracted service create:
 1. `<service>-postgres` using `postgres:18`, dedicated credentials, health check, and a dedicated volume mounted at `/var/lib/postgresql`.
 2. `<service>-migrate` using the service image and `command: ["database", "migrate"]`, gated on healthy Postgres.
 3. `<service>` using `command: ["serve"]`, gated on successful migration and exposing port `50051` only to the internal network.
-4. Consumer environment values `GRPC_<SERVICE>_HOST=<service>` and `GRPC_<SERVICE>_PORT=50051`, with startup gated on the producer.
+4. `<service>-worker` using the same image with `command: ["worker"]` when Temporal is enabled; give it the same database, dependency, and Temporal configuration required by its Activities.
+5. Consumer environment values `GRPC_<SERVICE>_HOST=<service>` and `GRPC_<SERVICE>_PORT=50051`, with startup gated on the producer.
 
 PostgreSQL 18 changed its image volume layout. For the current convention, mount the volume at `/var/lib/postgresql`; do not set custom `PGDATA` for the extracted service.
 

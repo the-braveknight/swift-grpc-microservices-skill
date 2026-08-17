@@ -1,6 +1,6 @@
 ---
 name: swift-grpc-microservices-skill
-description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems using strict reusable module and code conventions. Use when creating a service or multi-service system from scratch, defining service boundaries and communication patterns, structuring SwiftPM packages, designing versioned protobuf contracts, implementing Postgres ownership and transactions, wiring grpc-swift clients or servers, preserving XUseCase/XRepository/XCommand boundaries, adding composition roots and Docker Compose deployment, or extracting bounded contexts from a modular monolith.
+description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems using strict reusable module and code conventions. Use when creating a service or multi-service system from scratch, defining service boundaries and communication patterns, structuring SwiftPM packages, designing versioned protobuf contracts, implementing Postgres ownership and transactions, wiring grpc-swift clients or servers, coordinating durable Temporal workflows and workers, preserving XUseCase/XRepository/XCommand boundaries, adding composition roots and Docker Compose deployment, or extracting bounded contexts from a modular monolith.
 ---
 
 # Swift gRPC Microservices
@@ -19,11 +19,12 @@ Read these files before changing code:
 - Read [grpc-and-protos.md](references/grpc-and-protos.md) when defining contracts or implementing producer and consumer transports.
 - Read [composition-and-deployment.md](references/composition-and-deployment.md) when wiring executables, configuration, lifecycle, containers, or Compose.
 - Read [distributed-systems.md](references/distributed-systems.md) for every greenfield multi-service system and every task involving cross-service communication, consistency, resilience, security, or observability.
+- Read [temporal-workflows.md](references/temporal-workflows.md) in full when adding or changing Temporal workflows, Activities, clients, signals, queries, timers, or workers.
 - Read [extraction-runbook.md](references/extraction-runbook.md) in full when extracting a bounded context or decomposing an existing monolith.
 
 ## Follow the governing rules
 
-1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`; never substitute `Domain`, `Application`, or `Infrastructure`.
+1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`. Add `<Service>Workflows` only when the service uses Temporal; never substitute `Domain`, `Application`, or `Infrastructure`.
 2. Use `XUseCase`, `XUseCaseProtocol`, `XUseCaseInput`, `XUseCaseError`, `XUseCaseContext`, `XRepository`, `XRepositoryError`, and repository-facing `XCommand` names.
 3. Keep Core independently buildable. It must not import Postgres, gRPC, protobuf, logging, configuration, or server libraries.
 4. Keep the `Database` protocol in Core. Use `withConnection` for a single repository operation and `withTransaction` only for a multi-operation atomic use case. Never hold a database transaction across an RPC.
@@ -39,6 +40,10 @@ Read these files before changing code:
 14. Construct long-lived clients and servers once in executable composition roots and manage them with `ServiceGroup`, graceful shutdown, scoped configuration, and structured logging.
 15. Keep internal container traffic plaintext when a trusted private network and ingress terminate TLS. Add service-level TLS or mTLS when the threat model requires it; do not expose internal gRPC ports publicly by default.
 16. For existing systems, preserve behavior and unrelated user changes. For greenfield systems, state consequential assumptions and choose the smallest architecture that satisfies current requirements.
+17. Keep Temporal SDK code in `<Service>Workflows`. Keep workflow-facing protocols, states, results, and Activity service ports in Core without importing Temporal.
+18. Keep Workflow code deterministic and side-effect free. Put database, network, email, and cross-service work in retry-safe Activities.
+19. Commit PostgreSQL work before starting or signaling a workflow. Never hold a transaction across a Temporal operation, and do not add a periodic reconciliation loop, signal-with-start, or persisted workflow-resume logic unless the user explicitly requires it.
+20. Use deterministic workflow IDs, `.rejectDuplicate` reuse, `.useExisting` conflicts, signal-only commands, and queries for observation. Do not wait for workflow completion from a signal command.
 
 ## Choose the workflow
 
@@ -60,13 +65,14 @@ Read these files before changing code:
 ## Build a service
 
 1. Always run `swift package init --type executable` before adding targets, folders, or code.
-2. Reshape the package to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`.
+2. Reshape the package to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`. Add `<Service>Workflows` only when durable orchestration is required.
 3. Implement feature-first Core entities, commands, repositories, context protocols, use-case contracts, typed errors, and use cases.
 4. Implement Postgres database/context, prepared statements, repositories, constraints, error translation, and ordered migrations.
 5. Implement generated gRPC service protocols and feature-local `Protobuf/` conversion directories.
-6. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
-7. Add `.env.example`, container build support, and Compose services for Postgres, migration, and the service.
-8. Build the complete package, then exercise contracts and infrastructure boundaries.
+6. When Temporal is required, implement Workflows, Activities, a Core workflow-client port, a Temporal client adapter, and the executable `worker` command.
+7. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
+8. Add `.env.example`, container build support, and Compose services for Postgres, migration, and the service.
+9. Build the complete package, then exercise contracts and infrastructure boundaries.
 
 ## Extract an existing bounded context
 
@@ -87,6 +93,7 @@ Do not call a service or system complete until all applicable gates pass:
 - Single-operation use cases use `withConnection`; justified multi-operation units use `withTransaction`.
 - Producers map typed failures to stable gRPC status codes and consumers map them to local contracts.
 - Long-lived clients and servers are lifecycle-managed and shut down gracefully.
+- Temporal clients and workers are lifecycle-managed; Workflows contain no external side effects, and retryable Activities are idempotent.
 - Every service owns a dedicated database with applied migrations and no service-specific schema.
 - Remote calls have explicit failure semantics; retries are limited to safe/idempotent operations.
 - Contracts are versioned and compatibility-safe; canonical protos are not duplicated.
