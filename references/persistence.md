@@ -133,6 +133,16 @@ Compare every canonical field that defines the operation, after the service's no
 
 Use expected-state conditional updates for retryable state transitions and stable provider idempotency keys for external side effects such as email or payments. If deleting the result would allow a key to be reused but the product requires longer retention, store operation outcomes in a dedicated idempotency table instead of tying key lifetime to the entity row.
 
+For a business value that must be unique only while a process is live — such as one in-flight registration per email — enforce it with a partial unique index over the active states, named `<table>_active_<column>_key`:
+
+```sql
+CREATE UNIQUE INDEX registrations_active_email_key
+ON registrations (email)
+WHERE state IN ('pending', 'verified')
+```
+
+Rows in terminal states fall out of the index, so the value frees automatically when the process completes or expires. Scope the predicate to states this service owns the truth about; after the process hands ownership to another service, that service's own constraint is the authority. Map SQLSTATE `23505` on the named index to the matching repository error. Never replace this constraint with a check-then-insert in application code, and never convert the conflict into success by looking up the business value; distinct principals can submit identical business data.
+
 ## Database ownership and migrations
 
 An extracted microservice owns the whole database. Use unqualified names such as `items`, not `<service>.items`, and do not create a service-named schema.
@@ -141,7 +151,7 @@ Name migrations for their result, such as `CreateItemsTable`. Do not prefix a mi
 
 Write single-column uniqueness inline, such as `email TEXT NOT NULL UNIQUE`; use table-level `UNIQUE (...)` only for multi-column uniqueness. Do not add `CHECK (... IN (...))` constraints unless the user explicitly requests them.
 
-Name stored dates `creation_date`, `update_date`, `expiration_date`, `consumption_date`, and equivalent noun-based names. Use the matching Swift camel-case forms `creationDate`, `updateDate`, `expirationDate`, and `consumptionDate`. Do not use `created_at`, `expires_at`, `expiry_date`, or Swift `somethingAt` names.
+Name stored dates `creation_date`, `update_date`, `expiration_date`, `consumption_date`, and equivalent noun-based names. Use the matching Swift camel-case forms `creationDate`, `updateDate`, `expirationDate`, and `consumptionDate`. Do not use `created_at`, `expires_at`, `expiry_date`, or Swift `somethingAt` names. Noun-based names describe the stored value rather than the event, and they convert mechanically between SQL snake case and Swift camel case with no special cases.
 
 Do not delete the monolith's table or migration during the copy phase. Complete producer and consumer verification, decide how existing data moves, execute the cutover, and only then remove old persistence. Schema/table deletion and data migration are destructive product decisions; ask when the desired strategy is not stated.
 

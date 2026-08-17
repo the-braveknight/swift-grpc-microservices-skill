@@ -26,6 +26,8 @@ Use these exact responsibilities:
 
 Keep dependencies pointing inward. Core has no dependency on another service's implementation. If Core genuinely needs an external type as part of an application port, depend only on the smallest contract library and document why; do not import an entire infrastructure SDK for convenience.
 
+Duplicate the `Database`, `PostgresContext`, `PostgresDatabase`, configuration, and composition skeletons in each service rather than extracting a shared foundation package. The shapes start identical but are service-owned: contexts, database wrappers, and configuration diverge as services evolve, and a shared package would couple independent releases. Do not introduce a shared `<organization>-kit` unless the user explicitly asks for one.
+
 ## Naming grammar
 
 - Service package: `<organization>-<service>` or the repository's established lowercase service naming pattern.

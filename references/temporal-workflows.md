@@ -95,7 +95,7 @@ package struct ReservationActivities {
 }
 ```
 
-Nest Activity input values under the container and use `Id`, not `ID`, in Swift property and parameter names. Use `creationDate`, `expirationDate`, and similar noun-based date names; do not use `createdAt`, `expiresAt`, `expiryDate`, or other `somethingAt` names.
+Nest Activity input values under the container and use `Id`, not `ID`, in Swift property and parameter names; strict camel case keeps `registrationId` aligned with SQL `registration_id` and proto `registration_id` without acronym special-casing. Use `creationDate`, `expirationDate`, and similar noun-based date names; do not use `createdAt`, `expiresAt`, `expiryDate`, or other `somethingAt` names.
 
 Assume every Activity can be retried after its side effect succeeds but before Temporal receives the result. Make each write retry-safe at the system that owns the side effect: use unique constraints for creates, expected-state conditional updates for transitions, and provider idempotency keys for email, payments, or messaging. Do not rely on Workflow fields, Activity memory, or Temporal history as the downstream idempotency mechanism.
 
