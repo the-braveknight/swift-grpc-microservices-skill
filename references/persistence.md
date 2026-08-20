@@ -101,7 +101,22 @@ RETURNING id, name, creation_date
 
 Decode identifiers as `UUID`, dates as `Date`, and return a Core entity from the repository. Do not put `id` in `CreateItemCommand`; do not put a timestamp there unless time is a true caller-supplied business value. Do not add an identifier-generator protocol or generate entity IDs in a use case, repository, workflow, RPC client, or another service.
 
-Distinguish entity identifiers from non-identifier application values such as email-verification tokens. Define a narrow generator protocol such as `TokenGenerator` in Core, implement it in the executable target, inject it into the use case, and pass the generated value explicitly through the repository command and prepared-statement binding. When the use case supplies a required token, declare its column `UNIQUE NOT NULL` without a database generation default. Keep the command, insert column list, bindings, returned row, and non-optional decoder aligned.
+Distinguish entity identifiers from non-identifier application values such as email-verification tokens and refresh tokens. Model those as one Core value type that owns both minting and digesting, rather than a generator protocol and a separate hashing helper:
+
+```swift
+package struct SecretToken: Equatable, Sendable {
+    package let value: String
+    package let digest: String
+
+    package init(byteCount: Int = 32)          // mint from CSPRNG bytes, base64url
+    package init?(presented value: String)     // wrap what a caller sent back
+    private init(digesting value: String)      // both funnel here: value + SHA-256 hex
+}
+```
+
+`digest` is then never something a call site must remember to derive. Do not add a generator type beside it; a concrete struct with no protocol cannot be substituted, so injecting it buys nothing, and its statics drag verify-only callers into depending on the minting type.
+
+Persist only `digest`, hand `value` to its bearer once, and declare the column `TEXT UNIQUE NOT NULL` with no generation default. Use SHA-256 rather than a password hash: the input is already high entropy, and a deterministic digest is what makes lookup by index possible. Reserve bcrypt for user-chosen passwords. Delete the row when its process reaches a terminal state so no secret outlives the flow that issued it.
 
 ## Idempotent writes
 
@@ -131,7 +146,20 @@ RETURNING id, name, creation_date
 
 Compare every canonical field that defines the operation, after the service's normal normalization. The same key and input returns the existing database-generated result. The same key with different input returns no row and maps through a repository `.idempotencyConflict` to a use-case conflict. A different key that violates a business constraint remains a normal duplicate error. Never overwrite stored business data with a mismatched retry.
 
-Use expected-state conditional updates for retryable state transitions and stable provider idempotency keys for external side effects such as email or payments. If deleting the result would allow a key to be reused but the product requires longer retention, store operation outcomes in a dedicated idempotency table instead of tying key lifetime to the entity row.
+Use compare-and-swap updates for retryable state transitions and stable provider idempotency keys for external side effects such as email or payments. If deleting the result would allow a key to be reused but the product requires longer retention, store operation outcomes in a dedicated idempotency table instead of tying key lifetime to the entity row.
+
+Guard a state transition in the `WHERE` clause and let the absent row report the loss:
+
+```sql
+UPDATE registrations
+SET state = $2, update_date = NOW()
+WHERE id = $1 AND state = $3
+RETURNING id, state, creation_date, expiration_date
+```
+
+Returning no row is how a caller learns it lost the race, atomically and without a separate read.
+
+Carry only the destination state in the command. When each transition has one legal predecessor, derive the guard from the destination on the state enum instead of passing both: a second field carries no information the destination does not already imply, only the chance to pass an inconsistent pair. Give the initial state no predecessor so it binds as SQL `NULL`, never matches, and fails closed.
 
 For a business value that must be unique only while a process is live — such as one in-flight registration per email — enforce it with a partial unique index over the active states, named `<table>_active_<column>_key`:
 

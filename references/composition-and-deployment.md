@@ -202,7 +202,7 @@ For each extracted service create:
 
 1. `<service>-postgres` using `postgres:18`, dedicated credentials, health check, and a dedicated volume mounted at `/var/lib/postgresql`.
 2. `<service>-migrate` using the service image and `command: ["database", "migrate"]`, gated on healthy Postgres.
-3. `<service>` using `command: ["serve"]`, gated on successful migration and exposing port `50051` only to the internal network.
+3. `<service>` using `command: ["serve"]`, gated on successful migration and listening on `50051` inside the network.
 4. `<service>-worker` using the same image with `command: ["worker"]` when Temporal is enabled; give it the same database, dependency, and Temporal configuration required by its Activities.
 5. Consumer environment values `GRPC_<SERVICE>_HOST=<service>` and `GRPC_<SERVICE>_PORT=50051`, with startup gated on the producer.
 
@@ -211,3 +211,7 @@ PostgreSQL 18 changed its image volume layout. For the current convention, mount
 Use dedicated variables such as `CATALOG_POSTGRES_USER`, `CATALOG_POSTGRES_PASSWORD`, and `CATALOG_POSTGRES_DB` in a larger deployment compose file, then map them to the service's expected `POSTGRES_*` variables. Never reuse the monolith database credentials merely because both services run in one Compose project.
 
 Compose dependency conditions help startup ordering; they do not replace runtime recovery. The application must tolerate dependency restarts according to grpc-swift and Postgres client behavior.
+
+Publish only what something outside the stack calls. Give Postgres and the Temporal server no `ports:` at all — services reach them by name over the compose network, and an unpublished port cannot collide with whatever already holds `5432` or `7233` on the host. Make each published host port a variable with a default so a conflict is settled in `.env` rather than by editing the file, and reach an internal service with `docker compose exec` instead of reopening a port.
+
+A suite-level compose file runs published images and never builds them: `${REGISTRY:-...}/<image>:${IMAGE_TAG:-latest}` with `pull_policy`. Declare a required secret as `${VAR:?message}` so Compose refuses to start with an actionable error rather than a guessable default, and ship a `.env.example` naming every variable with the required ones left empty, copied to a git-ignored `.env`.

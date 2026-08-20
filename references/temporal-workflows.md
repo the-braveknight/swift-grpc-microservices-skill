@@ -73,7 +73,9 @@ Set terminal workflow state only after the corresponding Activity succeeds. Let 
 
 ## Activity design and retries
 
-Put every external side effect in an Activity: database work, remote service calls, email delivery, and provider operations. Group feature Activities in one `@ActivityContainer` and inject one narrow Core service protocol:
+Put every external side effect in an Activity: database work, remote service calls, email delivery, and provider operations. Give each Activity one side effect. Minting a secret and delivering it are two: issue the challenge in one Activity, send it in the next, so a failing delivery retries against the same stored digest instead of rotating the value the recipient already holds. Deleting a secret is a third, run before terminal state is assigned.
+
+Group feature Activities in one `@ActivityContainer` and inject one narrow Core service protocol:
 
 ```swift
 @ActivityContainer
@@ -97,7 +99,7 @@ package struct ReservationActivities {
 
 Nest Activity input values under the container and use `Id`, not `ID`, in Swift property and parameter names; strict camel case keeps `registrationId` aligned with SQL `registration_id` and proto `registration_id` without acronym special-casing. Use `creationDate`, `expirationDate`, and similar noun-based date names; do not use `createdAt`, `expiresAt`, `expiryDate`, or other `somethingAt` names.
 
-Assume every Activity can be retried after its side effect succeeds but before Temporal receives the result. Make each write retry-safe at the system that owns the side effect: use unique constraints for creates, expected-state conditional updates for transitions, and provider idempotency keys for email, payments, or messaging. Do not rely on Workflow fields, Activity memory, or Temporal history as the downstream idempotency mechanism.
+Assume every Activity can be retried after its side effect succeeds but before Temporal receives the result. Make each write retry-safe at the system that owns the side effect: use unique constraints for creates, compare-and-swap updates for transitions, and provider idempotency keys for email, payments, or messaging. Do not rely on Workflow fields, Activity memory, or Temporal history as the downstream idempotency mechanism.
 
 Derive a stable, namespaced idempotency key from immutable Workflow input or a caller-owned pending-record identifier, such as `authentication-registration-<registrationId>`. Reuse the exact key on every Activity attempt; never generate a UUID inside Workflow code or per Activity retry. Pass the key through the Core Activity service port and remote mutation contract.
 
@@ -140,7 +142,9 @@ WorkflowOptions(
 )
 ```
 
-Map Temporal failures into the Core client's small typed error contract. Do not expose Temporal SDK errors from Core or gRPC.
+These two policies already express the intent: a running Workflow returns the existing handle without error, and only a closed one rejects the start. Do not add a `catch is WorkflowAlreadyStartedError` on top — with a deterministic ID derived from a freshly created record it is unreachable, and where it can fire it reports success for a Workflow that will never run again.
+
+Do not flatten every Temporal failure into a single `unavailable` case. Let the SDK error propagate from the adapter and classify it where the distinction is actionable; a one-case enum erases the cause without adding a distinction.
 
 ## Transactions and durability
 

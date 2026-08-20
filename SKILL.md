@@ -24,12 +24,12 @@ Read these files before changing code:
 
 ## Follow the governing rules
 
-1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`. Add `<Service>Workflows` only when the service uses Temporal; never substitute `Domain`, `Application`, or `Infrastructure`.
+1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`. Add `<Service>Workflows` only when the service uses Temporal, and one `<Service><Technology>` leaf target per third-party provider SDK; never substitute `Domain`, `Application`, or `Infrastructure`.
 2. Use `XUseCase`, `XUseCaseProtocol`, `XUseCaseInput`, `XUseCaseError`, `XUseCaseContext`, `XRepository`, `XRepositoryError`, and repository-facing `XCommand` names.
-3. Keep Core independently buildable. It must not import Postgres, gRPC, protobuf, logging, configuration, or server libraries.
+3. Keep Core independently buildable. It may link a focused library such as `swift-crypto` or a shared contract package, but never an infrastructure SDK: Postgres, gRPC, protobuf, logging, configuration, mail or payment providers, or server libraries. A third-party SDK is what earns an adapter target; conforming to a Core protocol does not.
 4. Keep the `Database` protocol in Core. Use `withConnection` for a single repository operation and `withTransaction` only for a multi-operation atomic use case. Never hold a database transaction across an RPC.
 5. Let repositories or the database stamp persistence-owned dates. Use a database default such as `DEFAULT NOW()` in Postgres. Do not inject a `now` closure into a use case.
-6. Start with primitive domain values when sufficient. Introduce value objects only for established invariants or behavior, not architectural ceremony.
+6. Start with primitive domain values when sufficient. Introduce value objects only for established invariants or behavior, not architectural ceremony. Keep business rules in Core as plain structs named `XPolicy` or `XValidator` — never protocols, never injected — and name a duration `expiration`. Configuration is deployment wiring; a policy is a product decision the composition root translates configuration into. Do not inject a concrete struct that has no protocol.
 7. Give every service sole ownership of its database. Use unqualified table names and no service-named Postgres schema. Name migrations for the database change without a redundant service prefix.
 8. Put protobuf conversions in the transport feature's `Protobuf/` directory using semantic `X+Protobuf.swift` names. Keep the generated-service conformance at the feature root. Do not create generic `Mappings` or `Adapters` directories.
 9. Store canonical `.proto` files only in the shared `<project>-protos` Swift package at `https://github.com/<organization>/<project>-protos.git`. Nest proto files by organization, service, and version. Do not copy schemas into producers or consumers.
@@ -45,8 +45,12 @@ Read these files before changing code:
 19. Commit PostgreSQL work before starting or signaling a workflow. Never hold a transaction across a Temporal operation, and do not add a periodic reconciliation loop, signal-with-start, or persisted workflow-resume logic unless the user explicitly requires it.
 20. Use deterministic workflow IDs, `.rejectDuplicate` reuse, `.useExisting` conflicts, signal-only commands, and queries for observation. Do not wait for workflow completion from a signal command.
 21. Generate every persistent entity identifier in the database that owns the entity, using `UUID DEFAULT uuidv7()`. Omit that identifier from create commands and create RPC requests; return it from the owner after insertion. Never preallocate or generate another service's identifier.
-22. Generate non-identifier application values such as verification tokens in the service use case through a Core-owned generator protocol. Pass them explicitly through repository commands and SQL; do not give their database columns a generation default.
+22. Model non-identifier secrets such as verification and refresh tokens as one Core value type that mints and digests, not a generator protocol. Persist only the SHA-256 digest, hand the value to its bearer once, give the column no generation default, and delete the row at terminal state. Reserve bcrypt for user-chosen passwords.
 23. Make every remotely retryable mutation idempotent in the service that owns the side effect. Use a stable, namespaced operation key, enforce it atomically with persistence or the provider, return the prior outcome for the same canonical input, and reject reuse with different input. Never use an idempotency key as authorization or as an entity identifier.
+24. Guard every state transition in the `WHERE` clause and treat the absent row as the lost race. Carry only the destination state in the command and derive its one legal predecessor from the state enum.
+25. Translate an error only where the translation carries information. Never funnel every failure of an adapter into a single-case enum; let the infrastructure error propagate and classify it where the distinction is actionable. Name a repository error for the constraint that exists.
+26. Depend on organization packages by tagged URL, never `.package(path:)`. Publish and tag the shared package before a service pins it.
+27. Publish only what is called from outside the stack. Databases and orchestrators get no `ports:`; make each published host port a variable, run suite compose files from registry images, and declare required secrets as `${VAR:?message}` beside a `.env.example`.
 
 ## Choose the workflow
 

@@ -64,6 +64,10 @@ dependencies: [
 
 Do not add every product to every target. Declare only the direct products imported by that target, using the manifest shape below. The container plugin is invoked from the package command line and does not need to be attached to a source target.
 
+Depend on organization packages by tagged URL, never by `.package(path:)`. A path dependency builds only where the sibling repository happens to be checked out, so CI and container builds fail on a package that resolves locally — and a service can silently build against uncommitted contract changes. Publish and tag first, then pin `from:` the release containing what the service imports. Contract additions are additive: tag them as a minor release so consumers on the same major range pick them up without a manifest edit.
+
+Targets inside a package do not repeat the organization prefix; the package name already carries it. After renaming a target, delete `.build` in that package and every consumer, or the stale `.swiftmodule` keeps the old module name and the compiler insists a module both exists and does not.
+
 ## Exact source tree
 
 ```text
@@ -128,6 +132,10 @@ Sources/
       <Feature>Workflow.swift
       <Feature>Activities.swift
       Temporal<Feature>WorkflowClient.swift
+  <Service>Bcrypt/                 # one target per provider SDK
+    BcryptPasswordHasher.swift
+  <Service>Resend/
+    Resend<Feature>EmailService.swift
 ```
 
 Use plural feature folders such as `Items`, then group repository and use-case artifacts within that feature. Do not create top-level `Entities`, `UseCases`, or `Repositories` buckets in Core. In Postgres, group by technical responsibility and then entity because those files implement infrastructure mechanics.
@@ -169,6 +177,14 @@ targets: [
             .product(name: "Temporal", package: "swift-temporal-sdk"),
         ]
     ), // only with Temporal
+    .target(
+        name: "<Service>Bcrypt",
+        dependencies: [
+            "<Service>Core",
+            .product(name: "HummingbirdBcrypt", package: "hummingbird-auth"),
+            .product(name: "NIOPosix", package: "swift-nio"),
+        ]
+    ), // one adapter target per provider SDK
     .executableTarget(
         name: "<Service>",
         dependencies: [

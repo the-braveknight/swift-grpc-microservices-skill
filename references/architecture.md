@@ -10,6 +10,7 @@ Use a service-oriented SwiftPM package, not textbook layer names. The package is
 ├── <Service>Postgres ─────→ <Service>Core
 ├── <Service>GRPC ─────────→ <Service>Core
 ├── <Service>Workflows ────→ <Service>Core  # only with Temporal
+├── <Service><Technology> ─→ <Service>Core  # one per third-party provider SDK
 └── <Service> ─────────────→ all required targets
 
 ```
@@ -18,13 +19,30 @@ Use these exact responsibilities:
 
 | Target | Owns | Must not own |
 | --- | --- | --- |
-| `<Service>Core` | Entities, repository protocols and errors, repository commands, database protocol, use-case protocols/inputs/errors/contexts/implementations | SQL, generated messages, RPC status, configuration, logging, server startup |
+| `<Service>Core` | Entities, repository protocols and errors, repository commands, database protocol, policies and validators, use-case protocols/inputs/errors/contexts/implementations | SQL, generated messages, RPC status, configuration, logging, server startup |
+| `<Service><Technology>` | One provider SDK's adapter conforming to a Core port, such as `<Service>Bcrypt` or `<Service>Resend` | Business rules, configuration reading, client construction |
 | `<Service>Postgres` | Postgres context/database, repositories, prepared statements, migrations | Business validation, RPC mapping, CLI parsing |
 | `<Service>GRPC` | Generated-service conformances, request/input mapping, domain/protobuf mapping, RPC error translation | SQL, environment reading, server construction |
 | `<Service>Workflows` | Temporal Workflows, Activity containers, workflow-client adapters, signals, queries, and Temporal error translation | SQL implementations, generated protobuf, environment reading, dependency construction |
 | `<Service>` | ArgumentParser command tree, environment configuration, logging, dependency construction, server/client construction, lifecycle | Reusable business rules |
 
-Keep dependencies pointing inward. Core has no dependency on another service's implementation. If Core genuinely needs an external type as part of an application port, depend only on the smallest contract library and document why; do not import an entire infrastructure SDK for convenience.
+Keep dependencies pointing inward. Core has no dependency on another service's implementation. Zero dependencies is not the rule — Swift server libraries routinely ship a small-dependency core, and Core may link a focused library such as `swift-crypto`, `jwt-kit`, or the organization's shared identity contract. What Core must not link is an infrastructure SDK: a database driver, an HTTP client, a mail or payments provider, a server framework.
+
+A third-party SDK is what earns a `<Service><Technology>` target; conforming to a Core protocol does not. Keep those targets leaves that only the composition root depends on. Core is the root of the internal graph, so a mail SDK there makes `<Service>Postgres` link an HTTP client to run SQL, and an email-template edit recompile every target.
+
+Business rules that need no SDK stay in Core as plain structs — never protocols, never injected:
+
+```swift
+package struct PasswordPolicy: Equatable, Sendable {
+    package static let standard = PasswordPolicy()
+    package let minimumLength: Int
+    package let requiresNumber: Bool
+}
+```
+
+Name a rule expressed as numbers `XPolicy`, not `XConfiguration`. Configuration is deployment wiring that varies per environment; a policy is a product decision that would be identical in staging and production. The composition root reads configuration and translates it into policy — being loadable from `ConfigReader` does not make a value configuration. Name a duration `expiration`, matching the `expirationDate` it produces.
+
+Do not inject a concrete struct that has no protocol: injection buys substitution, and a concrete type cannot be substituted. Either the seam is real and the parameter is a protocol, or the type is constructed where it is used.
 
 Duplicate the `Database`, `PostgresContext`, `PostgresDatabase`, configuration, and composition skeletons in each service rather than extracting a shared foundation package. The shapes start identical but are service-owned: contexts, database wrappers, and configuration diverge as services evolve, and a shared package would couple independent releases. Do not introduce a shared `<organization>-kit` unless the user explicitly asks for one.
 
@@ -34,6 +52,8 @@ Duplicate the `Database`, `PostgresContext`, `PostgresDatabase`, configuration, 
 - Executable product: lowercase service name, such as `catalog`.
 - Internal targets: `CatalogCore`, `CatalogPostgres`, `CatalogGRPC`, `Catalog`.
 - Optional Temporal target: `CatalogWorkflows`.
+- Provider adapter target: `CatalogBcrypt`, `CatalogResend` — the technology, not the port it implements.
+- Business rule value: `PasswordPolicy`, `SessionPolicy`, `EmailValidator`.
 - Entity: `Item`.
 - Use case: `CreateItemUseCase`.
 - Use-case port: `CreateItemUseCaseProtocol`.
@@ -62,6 +82,8 @@ Use protocols where they enable a real seam:
 Do not add a protocol merely to mirror every concrete type. Keep entities and command values as structs. Keep configuration and composition concrete at the executable root.
 
 Use typed errors in Core. Map persistence-specific failures into repository errors in persistence, repository errors into use-case errors in Core, and use-case errors into RPC status in gRPC. Reverse that translation at the consumer boundary. Never make Core switch on SQLSTATE or `RPCError`.
+
+Translate an error only where the translation carries information. A one-case adapter enum every failure funnels into — `catch { throw XClientError.unavailable }` — destroys the cause without adding a distinction, so a permanent misconfiguration reports as a retryable outage and the caller retries what can never succeed. Let the infrastructure error propagate and classify it where the difference is actionable. Name a repository error for the constraint that exists: a partial unique index over active states means "an active record exists," not "duplicate email."
 
 ## Ownership rules
 
