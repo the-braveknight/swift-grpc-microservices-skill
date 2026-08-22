@@ -125,6 +125,8 @@ Identify public, private, administrative, and data-sensitive boundaries. Keep in
 
 Model service identity separately from end-user identity. Do not trust a caller merely because it is on an internal network.
 
+See [identity-and-access.md](identity-and-access.md) for how a caller is signed, verified, identified per transport, and forwarded between services.
+
 ## Observability and operations
 
 Establish consistent signals across services:

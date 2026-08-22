@@ -12,6 +12,7 @@ The skill standardizes:
 - versioned protobuf packages and grpc-swift producer/consumer boundaries
 - executable composition roots, configuration, lifecycle management, and migrations
 - durable Temporal workflows, Activities, signals, queries, clients, and worker composition
+- a shared identity package, single-issuer signing keys, and caller identification and propagation
 - service boundaries, communication choices, consistency, resilience, security, and observability
 - PostgreSQL 18 and Docker Compose deployment topology
 - staged data migration, rollout, and monolith retirement
