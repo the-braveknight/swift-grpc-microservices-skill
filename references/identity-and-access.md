@@ -15,6 +15,20 @@ It is a separate package from `<project>-protos` because it is runtime behavior 
 contract, and separate products because a gRPC-only service must not link Hummingbird to verify a
 token. Core may link `Identity`; it is a focused shared package, not an infrastructure SDK.
 
+Because it is consumed by tag, a source edit here is invisible to every service until it is tagged
+and each consumer's `Package.resolved` is updated. Verify a cross-repo change before tagging by
+pointing a consumer at the working copy:
+
+```sh
+swift package edit <project>-identity --path ../<project>-identity   # resolution must succeed first
+swift build
+swift package unedit <project>-identity
+```
+
+Adding a case to a public enum here breaks every consumer that switches over it exhaustively. Plan
+it as a breaking change across the services, even though a `from:` requirement will resolve the new
+tag automatically and present it as a build failure rather than a resolution one.
+
 ## One issuer, asymmetric keys
 
 Sign with EdDSA (Ed25519). The service that authenticates users holds the private key and is the
@@ -31,11 +45,18 @@ build a signer even when the signer type is in scope.
 ```swift
 public struct Identity: JWTPayload {
     public let subject: String
+    public let role: UserRole
     public let issuer: IssuerClaim
     public let issuedAt: IssuedAtClaim
     public let expiration: ExpirationClaim
 
-    init(subject: String, issuer: IssuerClaim, issuedAt: IssuedAtClaim, expiration: ExpirationClaim) { … }
+    init(
+        subject: String,
+        role: UserRole,
+        issuer: IssuerClaim,
+        issuedAt: IssuedAtClaim,
+        expiration: ExpirationClaim
+    ) { … }
 
     public func verify(using algorithm: some JWTAlgorithm) throws {
         try expiration.verifyNotExpired()
@@ -43,10 +64,16 @@ public struct Identity: JWTPayload {
 
     private enum CodingKeys: String, CodingKey {
         case subject = "sub"
+        case role
         case issuer = "iss"
         case issuedAt = "iat"
         case expiration = "exp"
     }
+}
+
+public enum UserRole: String, Codable, Sendable {
+    case user
+    case admin
 }
 ```
 
@@ -56,8 +83,28 @@ contract between the service that mints tokens and every service that verifies o
 under new keys, and never repurpose an existing key.
 
 Carry `sub` as `String` rather than `UUID` when service accounts need a subject that is not a user
-identifier. Add roles or scopes only when something enforces them; a claim nothing reads is a
-liability that looks like a control.
+identifier.
+
+## What belongs in the token
+
+A token answers *who is calling*. It never answers *what they may do*. Carry the authentication
+claims and the identity attributes a service needs in order to decide for itself — the subject, the
+issuer, the validity window, and a role. Keep permissions, scopes, entitlements and feature grants
+out of it.
+
+The distinction is not stylistic. A role is a fact about a user, owned by the service that stores
+users. A permission is a policy, owned by whichever service enforces it. Putting
+`scopes: ["users:list", "billing:refund"]` in the token moves every service's policy into the one
+service that mints tokens: adding an RPC now means changing the issuer, and the set of things a
+token authorises can only be discovered by reading every consumer. Putting `role: admin` there
+instead lets each service answer "may an admin do this *here*?" in its own code, beside the handler
+that does it.
+
+Every claim is a copy of state that can go stale. It is fixed at signing and only changes when the
+token is refreshed, so a demotion takes effect up to one access-token lifetime late. That is the
+same bound that already applies to a revoked session, and it is why the access-token expiry is kept
+short. It is also why the claim set should stay small: a claim nothing reads is a liability that
+looks like a control, and a claim everything reads is a cache nothing invalidates.
 
 ## Signing
 
@@ -68,21 +115,27 @@ public struct IdentitySigner: Sendable {
         public let privateKey: EdDSA.PrivateKey
     }
 
-    public func makeIdentity(subject: String, expiration: TimeInterval) -> Identity
+    public func makeIdentity(subject: String, role: UserRole, expiration: TimeInterval) -> Identity
     public func signIdentity(_ identity: Identity) async throws -> String
 }
 ```
 
-The caller states who the token is for and how long it lasts. `iss` and `iat` belong to the
-signer: an issuer is a property of the service doing the signing rather than of any one token, so
-stating it per call site is the same value repeated everywhere and wrong wherever it drifts.
+The caller states who the token is for, what role they hold, and how long it lasts. `role` is the
+caller's to state because only the caller has looked the subject up: the signer attests a claim, it
+does not know what is true of a user. `iss` and `iat` belong to the signer: an issuer is a property
+of the service doing the signing rather than of any one token, so stating it per call site is the
+same value repeated everywhere and wrong wherever it drifts.
 
 Return the identity rather than signing in one step. A caller that mints a token almost always has
 to report when it expires, and deriving that expiry a second time leaves the token and what the
 caller says about it as two readings of the clock that can disagree:
 
 ```swift
-let identity = signer.makeIdentity(subject: user.id.uuidString, expiration: policy.accessTokenExpiration)
+let identity = signer.makeIdentity(
+    subject: user.id.uuidString,
+    role: user.role,
+    expiration: policy.accessTokenExpiration
+)
 let token = try await signer.signIdentity(identity)
 
 return Session(accessToken: token, accessTokenExpirationDate: identity.expiration.value)
@@ -93,14 +146,67 @@ business of sniffing key encodings, and a parsed key does not linger in memory a
 
 ## Identifying a caller versus requiring one
 
-Two separate decisions, two separate interceptors:
+Two separate decisions. Identifying is infrastructure and belongs in the shared package; requiring
+is policy and belongs to the service.
 
 - The identifying interceptor binds the caller when a token is present and leaves the context empty
-  when there is none. Apply it broadly.
-- The enforcing interceptor rejects a call with no bound caller. Apply it only to protected RPCs.
+  when there is none. Apply it broadly, to every RPC.
+- Requiring a caller is the handler's job: it reads the task local and refuses a `nil` one.
 
-This is the split between `AuthenticatorMiddleware` and `IsAuthenticatedMiddleware` on the HTTP
-side; mirror it on gRPC rather than inventing a second model.
+On HTTP, Hummingbird ships both halves already, so the split is `AuthenticatorMiddleware` and
+`IsAuthenticatedMiddleware`. Do not assume gRPC wants the mirror image. A server interceptor is
+dispatched on `MethodDescriptor` and can reach the request body only by consuming
+`request.messages` and re-emitting it, so it can express "an admin may call this RPC" but not "your
+own record, or any record if you are an admin". The second kind is most of real authorization and
+has to live in the handler anyway; an enforcing interceptor added early leaves two mechanisms
+maintained for one decision.
+
+Write the check in the handler until three or more RPCs need the same purely static role rule. Only
+then lift it into a `RoleServerInterceptor(allowedRoles:)` in the shared package's gRPC product,
+applied per method in the composition root so the whole policy reads in one place. Have it read the
+already-bound identity rather than verifying the token a second time, and have it refuse an
+anonymous caller rather than passing one through.
+
+## Authorization lives in the service
+
+The token supplies the role. Each service decides what that role may do inside it, in its own code,
+next to what it protects.
+
+```swift
+private func requireAdmin() throws {
+    guard let identity = IdentityContext.current?.identity else {
+        throw RPCError(code: .unauthenticated, message: "Authentication is required.")
+    }
+    guard identity.role == .admin else {
+        throw RPCError(code: .permissionDenied, message: "Administrator access is required.")
+    }
+}
+```
+
+Distinguish the two failures. A missing caller is `.unauthenticated`, because presenting a token
+could change the answer. A caller whose role is insufficient is `.permissionDenied`, because
+presenting a different token could not. Collapsing them tells a client to go and refresh a token
+that was never the problem, and it will keep refreshing.
+
+Gate the RPCs that answer about someone other than the caller. Leave open the ones the
+authenticating service reaches on behalf of a caller who cannot yet prove who they are: registering
+creates a user and logging in looks one up, both before any token exists. An authorization rule
+that breaks the login path is the one failure a client cannot recover from by logging in again.
+
+Define the role enum once, in the shared identity package, because every verifying service reads
+the claim and a copy per service is the same contract restated once per reader. A service that also
+persists roles keeps its own domain enum and maps at the transport boundary, the way it maps every
+other message. Refuse a role the wire does not name rather than reading it as the least privilege:
+
+```swift
+case .unspecified, .UNRECOGNIZED:
+    throw UserServiceError.unknown
+```
+
+`unspecified` is an unset field and `UNRECOGNIZED` is a value added to the contract after this
+service was built. Both mean the sender said something this service cannot interpret. Reading
+either as `user` looks like a working login while silently stripping an administrator of their
+role — far harder to notice than a login that stops.
 
 Absent and invalid are not the same thing. A caller who presents nothing has claimed nothing; a
 caller whose token does not verify has made a claim that failed. Pass the first through
