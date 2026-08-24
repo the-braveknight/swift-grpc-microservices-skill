@@ -287,63 +287,91 @@ Parse `authorization` yourself rather than trusting a framework helper:
 
 ## Key material in configuration
 
-Keys reach a service base64 encoded, because a PEM's newlines do not survive an environment
-variable. Decode in the composition root, and check for a PEM before attempting base64:
-
-```swift
-extension ConfigReader {
-    func requiredPEM(forKey key: ConfigKey, isSecret: Bool = true) throws -> String {
-        let configured = try requiredString(forKey: key, isSecret: isSecret)
-
-        guard !configured.contains("-----BEGIN") else { return configured }
-        guard let data = Data(base64Encoded: configured, options: .ignoreUnknownCharacters) else { return configured }
-
-        return String(decoding: data, as: UTF8.self)
-    }
-}
-```
-
-The ordering is load-bearing. Base64 decoding tolerates every character a PEM is made of, so
-decoding a raw PEM produces plausible-looking rubbish instead of failing, and whether it survives
-depends on the document's length modulo four. Test the input, never the decoded output.
-
-Give each configuration an `init(config:)` in the executable's `Configuration` folder, beside
-`PostgresClient.Configuration+ConfigReader.swift`:
+Configuration carries the path to a key, not the key itself. The composition root opens the file:
 
 ```swift
 extension IdentitySigner.Configuration {
     init(config: ConfigReader) throws {
+        let privateKeyPath = try config.requiredString(forKey: "privateKeyPath")
+        let privateKey = try String(contentsOfFile: privateKeyPath, encoding: .utf8)
+
         try self.init(
             issuer: config.string(forKey: "issuer", default: "<project>-authentication"),
-            privateKey: EdDSA.PrivateKey(pem: config.requiredPEM(forKey: "privateKey"))
+            privateKey: EdDSA.PrivateKey(pem: privateKey)
         )
     }
 }
 ```
 
-Ship a `scripts/generate-keys.sh` with the issuing service that generates the pair into a temporary
-directory, prints the two base64 lines, and fills `.env` on request. Generating into the working
-tree invites committing a private key; generating into `mktemp -d` under a trap cannot.
+Give each configuration an `init(config:)` in the executable's `Configuration` folder, beside
+`PostgresClient.Configuration+ConfigReader.swift`.
+
+A path is what the surrounding libraries already take. `TLSConfig.CertificateSource.file(path:format:)`
+and `PrivateKeySource.file(path:format:)` in grpc-swift, and `NIOSSLCertificate.fromPEMFile` in
+NIOSSL, are handed a path and open it themselves, so the mTLS material a service needs next is
+configured exactly like the signing key it needs now. Nothing about a path resists an environment
+variable, which is the whole reason the document used to be encoded.
+
+It matters most for a private key. An environment variable is readable from `/proc/<pid>/environ`,
+reported by the container runtime's inspect command, and inherited by every child process; a
+mounted file is none of those. It also keeps the material from becoming a configuration value at
+all, which is what an access reporter would otherwise be free to log.
+
+Fail loudly when the file is unreadable, naming both the key and the path. An absent mount, a
+wrong path, and the wrong file mode are different deployment mistakes with different fixes, and a
+failure that names neither leaves the operator to guess.
+
+If you inherit a system that carries the encoded document in the variable instead, the decoding
+order is load-bearing: test the input for a `-----BEGIN` header *before* attempting base64, never
+the decoded output. Base64 decoding tolerates every character a PEM is made of, so decoding a raw
+PEM produces plausible-looking rubbish rather than failing, and whether it survives depends on the
+document's length modulo four. Prefer migrating it to a path.
+
+Ship a `scripts/generate-keys.sh` with the issuing service that writes the pair as PEM files and
+refuses to overwrite an existing pair without `--force`, since rotating invalidates every access
+token in flight. The private key now has to land on disk for a container to mount it, so protect
+it there: create the directory `0700`, set `umask 077` *before* `openssl` writes so the key is
+never briefly world-readable between creation and `chmod`, and add the directory to
+`.gitignore`.
 
 ## Deployment
 
-Declare verification once and merge it into every service that verifies a token, including the
-issuing service when it protects any RPC of its own:
+Mount each key as a deployment secret and give every service the path, not the document. Declare
+verification once and merge it into every service that verifies a token, including the issuing
+service when it protects any RPC of its own:
 
 ```yaml
 x-jwt-verification: &jwt-verification
-  JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?Set JWT_PUBLIC_KEY in .env before starting the stack}
+  JWT_PUBLIC_KEY_PATH: /run/secrets/jwt-public
+
+secrets:
+  jwt-public:
+    file: ./secrets/jwt-public.pem
+  jwt-private:
+    file: ./secrets/jwt-private.pem
 
 services:
   authentication:
     environment:
       <<: [*postgres-connection, *jwt-verification]
-      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?Set JWT_PRIVATE_KEY in .env before starting the stack}
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt-private
+    secrets:
+      - jwt-public
+      - jwt-private
 ```
 
+Compose refuses to start when a secret's source file is missing, so a stack without keys fails at
+`up` rather than at the first request — the same guarantee a `${VAR:?message}` guard gives a
+variable.
+
 Verify the anchor is actually merged. An unreferenced YAML anchor is silently ignored, so a
-`${VAR:?message}` guard inside one never fires and the stack starts without a key the service
+`${VAR:?message}` guard inside one never fires and the stack starts without a value the service
 requires. `docker compose config <service>` shows what a service will really receive.
+
+On a platform without compose secrets, the equivalent is a file mount plus the path variable. Note
+that most will deploy a container whose mount is missing rather than refusing, so the failure
+appears in the logs as an unreadable key instead of a failed deploy; check them after the first
+rollout rather than reading a green deploy as proof the mount landed.
 
 Rotating means generating a new pair and restarting every service. Access tokens signed by the old
 key stop verifying and clients recover on their next refresh, provided refresh tokens are database

@@ -59,7 +59,7 @@ Sources/
 │   │   └── AdminRequestContext.swift
 │   ├── Controllers/
 │   │   ├── AuthenticationController.swift
-│   │   ├── UserController.swift
+│   │   ├── ItemController.swift
 │   │   └── ProfileController.swift
 │   ├── Middlewares/
 │   │   └── ErrorMiddleware/
@@ -72,9 +72,9 @@ Sources/
 │   │               └── RPCError+HTTPProblemResponse.swift
 │   └── Schemas/
 │       ├── Requests/
-│       │   └── RegisterRequest+RPC.swift
+│       │   └── CreateItemRequest+RPC.swift
 │       └── Responses/
-│           └── UserResponse+RPC.swift
+│           └── ItemResponse+RPC.swift
 └── <Project>/
     ├── <Project>.swift
     ├── Serve/
@@ -226,7 +226,7 @@ Two limits, both worth respecting rather than forcing through:
   caller-scoped list and an administrative list of everything. Keep those distinct with a query
   parameter or a separate path; collapsing them produces one operation with two meanings.
 - Not every route is a resource. Sessions, provider webhooks, and checkout callbacks are
-  workflows, and `POST /payments/stripe/webhook` is the honest spelling. Do not restructure a
+  workflows, and `POST /payments/<provider>/webhook` is the honest spelling. Do not restructure a
   working verb-shaped route to satisfy a taxonomy.
 
 Where a check depends on a path parameter — this record if it is yours, any record if you are an
@@ -239,9 +239,9 @@ One `XController` per resource, holding generated client protocols rather than c
 so a test can substitute them:
 
 ```swift
-package struct UserController: Sendable {
-    private let authenticationClient: Emberfilm_Authentication_V1_AuthenticationService.ClientProtocol
-    private let usersClient: Emberfilm_Users_V1_UserService.ClientProtocol
+package struct ItemController: Sendable {
+    private let catalogClient: Catalog_V1_ItemService.ClientProtocol
+    private let inventoryClient: Inventory_V1_StockService.ClientProtocol
 
     package func addPublicRoutes(to group: RouterGroup<BasicRequestContext>) { ... }
     package func addAuthenticatedRoutes(to group: RouterGroup<IdentityRequestContext>) { ... }
@@ -249,9 +249,8 @@ package struct UserController: Sendable {
 ```
 
 Name the registration methods for the tier they mount into. A controller may reach more than one
-service — verifying an email completes a registration owned by the authentication service while
-the user record is owned by the users service — and that is the gateway working: which service
-answers a resource is its problem, not the client's.
+service — an item's record is owned by catalog while its stock level is owned by inventory — and
+that is the gateway working: which service answers a resource is its problem, not the client's.
 
 Keep the path prefix in the composition root and the routes in the controller, so one file shows
 the whole surface and each controller stays movable.
@@ -264,19 +263,19 @@ producer-side `Protobuf/` convention.
 Make a conversion throw rather than drop:
 
 ```swift
-extension Components.Schemas.UserResponse: ResponseCodable {
-    init(_ user: Emberfilm_Users_V1_User) throws {
-        guard let id = UUID(uuidString: user.id) else {
-            throw HTTPError(.internalServerError, message: "The user record is malformed.")
+extension Components.Schemas.ItemResponse: ResponseCodable {
+    init(_ item: Catalog_V1_Item) throws {
+        guard let id = UUID(uuidString: item.id) else {
+            throw HTTPError(.internalServerError, message: "The item record is malformed.")
         }
-        self.init(id: id, name: user.name, email: user.email)
+        self.init(id: id, name: item.name)
     }
 }
 ```
 
-A `compactMap` over a malformed field returns a shorter list and a `200`, so a client sees a user
-who has disappeared rather than an error anybody investigates. A record the upstream service
-should never have produced is a fault in that service and should say so.
+A `compactMap` over a malformed field returns a shorter list and a `200`, so a client sees a
+record that has disappeared rather than an error anybody investigates. A value the upstream
+service should never have produced is a fault in that service and should say so.
 
 ## Error translation
 
@@ -373,8 +372,9 @@ likely to need next are configured exactly like the key it needs now, and none o
 becomes a configuration value an access reporter can write to a log.
 
 It also removes the reason the document was ever base64 encoded: a path survives an environment
-variable intact where a PEM's newlines do not. Where a service still takes the encoded document
-directly, the decoding rule in identity-and-access applies; prefer the path form for new work.
+variable intact where a PEM's newlines do not. This is the same rule the services behind the
+gateway follow — see [identity-and-access.md](identity-and-access.md) — so one key is
+configured one way across the system.
 
 Mount the file with Compose `secrets:` or `configs:`, or the platform's file-mount equivalent,
 and point the variable at it. Do not bundle a key as a SwiftPM resource: it is not a leak for a

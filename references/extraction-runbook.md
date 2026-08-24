@@ -88,7 +88,7 @@ Do not leave the old Postgres database/context variable in composition once no l
 6. Add a consumer dependency on the service for startup ordering.
 7. Render/validate Compose and verify image names and commands.
 
-For Dokploy or another ingress platform, expose only the public HTTP edge. Keep gRPC service-to-service traffic private. Use platform TLS at the edge; revisit mTLS only when the threat model requires it.
+On a managed container platform or any other ingress, expose only the public HTTP edge. Keep gRPC service-to-service traffic private. Use platform TLS at the edge; revisit mTLS only when the threat model requires it.
 
 ## 7. Move data and cut over
 
