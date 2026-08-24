@@ -11,6 +11,7 @@ The skill standardizes:
 - database-owned UUIDv7 identifiers that are omitted from caller create inputs
 - versioned protobuf packages and grpc-swift producer/consumer boundaries
 - executable composition roots, configuration, lifecycle management, and migrations
+- a Hummingbird API gateway with layered request contexts, tiered routing, and HTTP-to-RPC translation
 - durable Temporal workflows, Activities, signals, queries, clients, and worker composition
 - a shared identity package, single-issuer signing keys, and caller identification and propagation
 - service boundaries, communication choices, consistency, resilience, security, and observability

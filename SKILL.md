@@ -18,6 +18,7 @@ Read these files before changing code:
 - Read [persistence.md](references/persistence.md) when implementing Postgres, transactions, statements, repositories, or migrations.
 - Read [grpc-and-protos.md](references/grpc-and-protos.md) when defining contracts or implementing producer and consumer transports.
 - Read [composition-and-deployment.md](references/composition-and-deployment.md) when wiring executables, configuration, lifecycle, containers, or Compose.
+- Read [api-gateway.md](references/api-gateway.md) when building or changing the HTTP surface in front of the system: Hummingbird routing, request contexts, controllers, OpenAPI types, or HTTP-to-RPC translation.
 - Read [identity-and-access.md](references/identity-and-access.md) when a caller must be identified or a capability protected: signing keys, token issuance, transport interceptors or middleware, or propagating a caller between services.
 - Read [distributed-systems.md](references/distributed-systems.md) for every greenfield multi-service system and every task involving cross-service communication, consistency, resilience, security, or observability.
 - Read [temporal-workflows.md](references/temporal-workflows.md) in full when adding or changing Temporal workflows, Activities, clients, signals, queries, timers, or workers.
@@ -55,13 +56,20 @@ Read these files before changing code:
 28. Identify a caller and require one as separate interceptors. Identification passes an untokened call through anonymously and refuses a token that is present but does not verify; enforcement is applied only to protected RPCs. Exclude the RPCs that issue a session — password login and token refresh — from identification entirely, or a client that attaches its expired token to every call is refused the only call that could replace it.
 29. Propagate a caller by forwarding the token it arrived with, bound alongside the identity in a task local because `ServerContext` carries no metadata. Register the forwarding interceptor on the client rather than per call, never reissue a token, and let a call made outside any caller's request go out unauthenticated.
 30. Parse key material in the composition root, not the library. Take typed key values in configuration, accept the base64 form the environment carries, and test the input for a PEM header before attempting base64 — decoding tolerates every character a PEM contains and silently produces rubbish. Merge the verification anchor into every service that verifies, and confirm it renders: an unreferenced YAML anchor is ignored, so its `${VAR:?message}` guard never fires.
-31. Publish only what is called from outside the stack. Databases and orchestrators get no `ports:`; make each published host port a variable, run suite compose files from registry images, and declare required secrets as `${VAR:?message}` beside a `.env.example`.
+31. A gateway is not a service. Name the package `<organization>-api`, give it exactly two targets — `API` for the surface and `<Project>` for the composition root — and add no Core, Postgres, or provider target. Keep `openapi.yaml` in the `API` target directory beside its generator configuration and generate `types` only; the gateway registers its own routes, so generated server stubs are a second routing mechanism.
+32. Chain gateway request contexts `BasicRequestContext` → `IdentityRequestContext` → `AdminRequestContext`, and carry `coreContext` across rather than rebuilding it from the parent. `CoreRequestContextStorage.init(source:)` starts `parameters` and `endpointPath` empty, so rebuilding silently discards path parameters already extracted and a route declared with `:id` matches and then cannot find it.
+33. Register HTTP routes in three tiers: session-issuing routes outside the authenticating middleware, an identifying tier that still admits an anonymous request, and a requiring tier. This is the gRPC session-RPC exclusion restated one transport over — token refresh carries a refresh token in the `Authorization` header, so an authenticating middleware verifies it as a claim payload, fails, and refuses the route before its handler runs. Group by tier; never add a path exception inside the middleware.
+34. Give administrative routes the same path as the resource they act on and separate them with a request-context conversion at the verb, never an `/admin` path prefix. Keep verb-shaped routes verb-shaped: sessions, provider webhooks, and checkout callbacks are workflows, not resources. Where two operations would share a method and path but differ in scope, keep them distinct rather than collapsing them into one operation with two meanings.
+35. Map `RPCError` to HTTP by code and answer every failure as RFC 9457 problem details. Never collapse upstream failures into 500 — the producing service already classified the failure, and discarding that at the last hop tells a client to retry what cannot succeed.
+36. In a gateway, configure key material by path and read the document in the composition root. A path is the form NIOSSL and grpc-swift already take credentials in — `TLSConfig.CertificateSource.file(path:format:)`, `NIOSSLCertificate.fromPEMFile` — so mTLS material configures identically, and it removes the reason the document was base64 encoded at all.
+37. Publish only what is called from outside the stack. Databases and orchestrators get no `ports:`; make each published host port a variable, run suite compose files from registry images, and declare required secrets as `${VAR:?message}` beside a `.env.example`.
 
 ## Choose the workflow
 
 - For one new service, follow **Build a service**.
 - For a new distributed system, follow **Design and build a system**, then repeat **Build a service** for each bounded context.
 - For an existing modular monolith, follow **Extract an existing bounded context** and the extraction runbook.
+- For the HTTP surface in front of a system, follow **Build an API gateway**.
 - For a focused change, load only the relevant references and preserve the established architecture.
 
 ## Design and build a system
@@ -85,6 +93,17 @@ Read these files before changing code:
 7. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
 8. Add `.env.example`, container build support, and Compose services for Postgres, migration, and the service.
 9. Build the complete package, then exercise contracts and infrastructure boundaries.
+
+## Build an API gateway
+
+1. Run `swift package init --type executable`, then reshape the package to `API` and `<Project>`.
+2. Put `openapi.yaml` and `openapi-generator-config.yaml` in `Sources/API/`, generating `types` with `package` access.
+3. Implement the request-context chain, the error middleware, and the RFC 9457 problem types.
+4. Implement one controller per resource, holding generated client protocols and exposing registration methods named for the tier they mount into.
+5. Implement `Schemas/Requests` and `Schemas/Responses` conversions that throw on a malformed upstream value rather than dropping it.
+6. Add the `serve` composition root: verifier, one client per upstream with required host and port, the three router tiers, the application, and one `ServiceGroup`.
+7. Add `.env.example`, container build support, and a Compose service publishing only the HTTP port.
+8. Build, then exercise the tiers directly: a session-issuing route must reach its handler while carrying an unverifiable bearer token, and a protected route carrying the same token must be refused.
 
 ## Extract an existing bounded context
 
@@ -115,6 +134,11 @@ Do not call a service or system complete until all applicable gates pass:
 - Session-issuing RPCs are excluded from caller identification, and a client presenting an expired token can still refresh.
 - Every transport reads the credential the same way, and a forwarded token reaches the next service unchanged.
 - Every service that verifies a token actually receives the key in its rendered compose configuration.
+- A gateway package has exactly two targets, owns no database, and keeps its OpenAPI document in the target that generates from it.
+- Child request contexts preserve path parameters; a route declared with a parameter resolves it inside the child.
+- Session-issuing HTTP routes sit outside the authenticating middleware, and a refresh presenting an unverifiable bearer token reaches its handler rather than a 401.
+- Administrative routes share the path of the resource they act on and are gated by a context conversion, not a path prefix.
+- Upstream failures reach the client as problem details carrying the mapped status, not a blanket 500.
 - Logging, metrics/tracing strategy, health behavior, secrets, and network exposure match the operating environment.
 - Deployment ordering and representative dependency failures are verified.
 - Extraction work leaves no retired direct database access after cutover.
