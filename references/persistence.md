@@ -8,6 +8,7 @@ Keep every Postgres type in `<Service>Postgres`, except executable configuration
 - Repositories and statements
 - Idempotent writes
 - Database ownership and migrations
+- Row-level security
 - Transaction policy
 
 ## Database and context
@@ -183,9 +184,103 @@ Name stored dates `creation_date`, `update_date`, `expiration_date`, `consumptio
 
 Do not delete the monolith's table or migration during the copy phase. Complete producer and consumer verification, decide how existing data moves, execute the cutover, and only then remove old persistence. Schema/table deletion and data migration are destructive product decisions; ask when the desired strategy is not stated.
 
+## Row-level security
+
+When a service's rows belong to callers — a user's entitlements, a user's devices — confine callers
+in Postgres, not in the statements. Restating the rule as a scope bound into every query is the
+same predicate maintained twice, and the copy in the statements is the one that drifts. The rule
+exists once, as policies; the service tells the database who is calling.
+
+**The owner is exempt.** Postgres applies no policy to a table's owner, so a service that connects
+as the role that ran its migrations has every policy applied to nobody and every test passes with
+the policies switched off. Migrate as the owner and create a second role for `serve`:
+
+```swift
+await migrations.add(CreateEntitlementsTable())
+await migrations.add(CreateDevicesTable())
+await migrations.add(
+    CreateApplicationRole(role: applicationRole, password: applicationPassword, database: database)
+)
+await migrations.add(CreateEntitlementsRLSPolicy())
+await migrations.add(CreateDevicesRLSPolicy())
+```
+
+The role migration creates the role only if absent — roles are cluster-wide, and a database dropped
+and re-migrated must not fail on a role that outlived it — sets its password every run so the
+configured one is the one that works, and grants `CONNECT`, DML on all tables, and default
+privileges for tables the later migrations create. `CREATE ROLE`, `GRANT` and `ALTER ROLE …
+PASSWORD` take no bind parameters, so quote the identifier and the literal by hand, doubling any
+embedded quote. Tables first, then the role, then the policies. The alternative, `FORCE ROW LEVEL
+SECURITY` with one role, subjects the migrator to the policies too and makes every future data
+migration set a role first; prefer the second role.
+
+**Stamp the transaction, not the connection.** The database learns who is calling from two
+transaction-local settings the policies read:
+
+```swift
+if let identity = IdentityContext.current?.identity {
+    try await connection.query(
+        "SELECT set_config('app.caller_role', \(identity.role.rawValue), true)", logger: logger
+    )
+    if identity.role != .service, let userId = UUID(uuidString: identity.subject) {
+        try await connection.query(
+            "SELECT set_config('app.caller_user_id', \(userId.uuidString.lowercased()), true)", logger: logger
+        )
+    }
+}
+```
+
+`set_config(…, true)` takes bound parameters, unlike `SET LOCAL`, so nothing is spliced into SQL,
+and it scopes the value to the transaction, so a pooled connection carries nothing to its next user.
+Name the settings for the *caller*, not a user: a caller need not be one. Set the role always and
+the user id only for a person — a process's subject is a credential name, and the policy casts the
+setting to `uuid`, so setting it to `payments-worker` fails the worker's every query. With no
+identity bound, nothing is set and the policies admit no rows.
+
+**The policies** admit a process beside an administrator and keep `NULLIF`:
+
+```sql
+CREATE POLICY user_isolation ON devices
+    USING (
+        current_setting('app.caller_role', true) IN ('admin', 'service')
+        OR user_id = NULLIF(current_setting('app.caller_user_id', true), '')::uuid
+    )
+    WITH CHECK (
+        current_setting('app.caller_role', true) IN ('admin', 'service')
+        OR user_id = NULLIF(current_setting('app.caller_user_id', true), '')::uuid
+    )
+```
+
+`NULLIF` is load-bearing: once a custom setting has been set on a connection, reading it after that
+transaction yields `''` rather than `NULL`, and `''::uuid` is an error rather than a non-match. A
+table nobody writes as a user — an entitlement is granted by a payment or an administrator — has a
+`WITH CHECK` on the role alone. A join table is reachable through its parent: an enrollment's policy
+is `EXISTS (SELECT 1 FROM entitlements e WHERE e.id = entitlement_id AND e.user_id = …)`, and the
+subquery runs under the parent's own policy.
+
+**Every operation is a transaction.** The stamp lives on the transaction, so a read outside one sees
+no rows. Drop `withConnection` from the service's `Database` protocol rather than leave a method that
+looks cheaper and silently opens a transaction; the single-operation rule in *Transaction policy*
+does not apply to a service that confines with policies.
+
+**The service still decides what RLS cannot say.** A policy filters; it cannot answer
+`permissionDenied`. An RPC that names a user in the request — claim for this user, list this user's
+entitlements — still checks in the handler that the named user is the caller or the caller is
+privileged, and the person-only RPCs still refuse a process by role. What the policies replace is the
+*confinement* of id-only RPCs: an entitlement or device belonging to somebody else lists as empty and
+deletes as nothing, exactly as if it did not exist, so an id cannot be probed.
+
+**Verify as the application role.** Run the service against the role the policies apply to and
+probe with three tokens — a user, another user, an administrator — plus a process. As the owner,
+every case passes with the policies off, which proves nothing. Check the policy text itself too
+(`pg_policies`), since a renamed setting in code and an unrenamed one in a migration already applied
+fails only at query time.
+
 ## Transaction policy
 
-- Use `withConnection` for one create, update, delete, get, or list repository operation.
+- Use `withConnection` for one create, update, delete, get, or list repository operation, unless
+  the service confines rows with row-level security, in which case every operation is a stamped
+  transaction and `withConnection` does not exist.
 - Use `withTransaction` when a use case must make multiple local repository mutations atomically.
 - Build every repository in a transaction context from the same supplied connection.
 - Never call another microservice from inside `withTransaction`.

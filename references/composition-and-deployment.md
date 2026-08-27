@@ -158,6 +158,21 @@ let temporalWorker = try TemporalWorker(
 
 Add the worker and every long-lived dependency used by Activities to one `ServiceGroup`. Do not add a five-second registration scanner or another periodic database-to-Temporal reconciliation service. Temporal owns durable workflow execution.
 
+A worker has no inbound request to forward, so it speaks as itself (see *Presenting a process's own identity* in identity-and-access.md). Under Infrastructure, construct a client to the issuer with no interceptor — the exchange authenticates by the secret in the request — and a `ServiceIdentitySession` over the `<project>-service-identity` adapter; put `ServiceIdentityInterceptor(session:)` on every client the worker calls as itself. Under Lifecycle, race one exchange against the group so a wrong secret or an unreachable issuer fails the worker at startup naming the problem:
+
+```swift
+try await withThrowingTaskGroup { group in
+    group.addTask { try await serviceGroup.run() }
+
+    let token = try await serviceIdentitySession.refresh()
+    logger.info("Authenticated as a service", metadata: ["expiration": "\(token.expirationDate)"])
+
+    try await group.waitForAll()
+}
+```
+
+`GRPCClient` tolerates an RPC that races its `run()`, so the exchange may start before the group has fully started its clients. Read the credential through a `ServiceIdentityCredentials+ConfigReader.swift` beside the other configuration extensions: `SERVICE_CREDENTIAL_ID` and `SERVICE_CREDENTIAL_SECRET_PATH`, the file's trailing newline trimmed.
+
 ## Migration composition root
 
 The migration command uses the same configuration extension and logging system. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
@@ -175,6 +190,8 @@ try await withThrowingTaskGroup { group in
     group.cancelAll()
 }
 ```
+
+When the service confines callers with row-level security, the migration command also reads `POSTGRES_APP_ROLE` (a default is fine) and `POSTGRES_APP_PASSWORD` (required) and registers the role migration after the table migrations and before the policies. `serve` then connects as that role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the application role's, not the owner's the migration used.
 
 ## Container build
 
@@ -215,3 +232,30 @@ Compose dependency conditions help startup ordering; they do not replace runtime
 Publish only what something outside the stack calls. Give Postgres and the Temporal server no `ports:` at all — services reach them by name over the compose network, and an unpublished port cannot collide with whatever already holds `5432` or `7233` on the host. Make each published host port a variable with a default so a conflict is settled in `.env` rather than by editing the file, and reach an internal service with `docker compose exec` instead of reopening a port.
 
 A suite-level compose file runs published images and never builds them: `${REGISTRY:-...}/<image>:${IMAGE_TAG:-latest}` with `pull_policy`. Declare a required secret as `${VAR:?message}` so Compose refuses to start with an actionable error rather than a guessable default, and ship a `.env.example` naming every variable with the required ones left empty, copied to a git-ignored `.env`.
+
+A service that connects as an application role overrides the credentials the shared anchor merges in — an explicit key in a mapping wins over `<<:` — while its migration job keeps the owner's and adds the role's:
+
+```yaml
+entitlements-migrate:
+  environment:
+    <<: *postgres-connection
+    POSTGRES_APP_ROLE: ${ENTITLEMENTS_APP_ROLE:-entitlements_app}
+    POSTGRES_APP_PASSWORD: ${ENTITLEMENTS_APP_PASSWORD:-emberfilm}
+
+entitlements:
+  environment:
+    <<: [*postgres-connection, *jwt-verification]
+    POSTGRES_USER: ${ENTITLEMENTS_APP_ROLE:-entitlements_app}
+    POSTGRES_PASSWORD: ${ENTITLEMENTS_APP_PASSWORD:-emberfilm}
+```
+
+A process's service credential is a mounted secret like a key, and it is the one secret that cannot exist before the stack has run: it is issued against the issuer's migrated database. Compose refuses to start a service whose secret file is missing, so the first start is staged, and the `.env.example` says so:
+
+```sh
+docker compose up -d postgres postgres-init authentication-migrate authentication
+docker compose run --rm authentication service-credentials create --id authentication-worker \
+    > secrets/authentication-worker.secret
+docker compose up -d
+```
+
+`docker compose config` validates a file whose secret source is missing; only `up` refuses. Every service that verifies tokens must be the build that decodes the process's role before that process is started, or its every call is refused.

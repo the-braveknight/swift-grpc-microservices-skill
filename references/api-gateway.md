@@ -156,6 +156,26 @@ package struct AdminRequestContext: ChildRequestContext {
 Distinguish the two failures for the same reason gRPC handlers do. Absent is `401`, because
 presenting a token could change the answer; insufficient is `403`, because it could not.
 
+The surface is for people. Every route that acts on "the caller's own" account sends
+`identity.subject` upstream as a user id, and a process's token — `role: service` — carries a
+credential name there instead. Give `IdentityRequestContext` a `requireUser()` and use it, not
+`requireIdentity()`, on those routes:
+
+```swift
+package func requireUser() throws -> Identity {
+    let identity = try requireIdentity()
+    guard identity.role != .service else {
+        throw HTTPError(.forbidden, message: "This operation requires a user.")
+    }
+    return identity
+}
+```
+
+`403`, because the token is valid and is simply not the kind the route takes; and here rather than
+upstream, because a users service would otherwise report the name as a malformed id — the wrong
+error for the right refusal. The administrative conversion already refuses anything but `admin`,
+so a process is turned away on every route without a per-handler test.
+
 ## Router tiers
 
 Register routes in three tiers, and let the tier — not a path prefix or a path exception —

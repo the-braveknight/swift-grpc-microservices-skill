@@ -25,9 +25,18 @@ swift build
 swift package unedit <project>-identity
 ```
 
+Edit mode needs a resolvable graph to enter and to leave. When the consumer's manifest already
+names a tag that does not exist yet — or a package whose repository does not exist yet — resolution
+fails and `edit` refuses. Temporarily rewrite the `.package(url:from:)` lines to `.package(path:)`,
+build, and restore them; `swift package unedit` fails the same way, so revert the constraint, unedit,
+`git checkout -- Package.resolved`, then re-apply the constraint.
+
 Adding a case to a public enum here breaks every consumer that switches over it exhaustively. Plan
 it as a breaking change across the services, even though a `from:` requirement will resolve the new
-tag automatically and present it as a build failure rather than a resolution one.
+tag automatically and present it as a build failure rather than a resolution one. Adding a case to
+`UserRole` breaks them differently and worse: a token carrying the new role fails to *decode* on a
+verifier built against the old tag, so every RPC that token reaches is refused as `unauthenticated`.
+Bump every verifying service to the new tag before the first token with the new role is minted.
 
 ## One issuer, asymmetric keys
 
@@ -74,6 +83,7 @@ public struct Identity: JWTPayload {
 public enum UserRole: String, Codable, Sendable {
     case user
     case admin
+    case service
 }
 ```
 
@@ -82,8 +92,8 @@ identity. Map every property to its registered claim name through `CodingKeys`. 
 contract between the service that mints tokens and every service that verifies one: add claims
 under new keys, and never repurpose an existing key.
 
-Carry `sub` as `String` rather than `UUID` when service accounts need a subject that is not a user
-identifier.
+Carry `sub` as `String`, not `UUID`. A person's subject is their user id; a process's subject is
+the name its credential was issued under, and both are one claim.
 
 ## What belongs in the token
 
@@ -266,10 +276,134 @@ identifies the caller at every service in the chain. Forward the token unchanged
 since only the signing service can produce another. Register the interceptor on the `GRPCClient`
 rather than per call, so a service cannot forget it.
 
-A call made outside a caller's request — startup work, a workflow Activity, a scheduled job — goes
-out unauthenticated rather than failing. Whether that is acceptable belongs to the receiving
-service, which says so by choosing which RPCs it protects. The corollary is real: an RPC the
-authenticating service calls before a caller exists must be reachable anonymously.
+A call made outside a caller's request — startup work, a workflow Activity, a scheduled job — has
+nothing to forward, and the forwarding interceptor sends it out unauthenticated rather than failing.
+A process that should identify itself on such calls presents its own identity instead, through a
+separate client — see *Processes* below. The corollary still holds for the issuer: an RPC the
+authenticating service calls before any caller exists must be reachable by whatever that service
+presents, which is nothing until it too holds a credential.
+
+## Processes: the service role
+
+A worker, a service reacting to a provider's webhook, a reconciliation job — anything that calls
+other services with no inbound request behind it — is a principal of a second kind. Give it its own
+role, `service`, rather than lending it `admin`: an admin token works at the HTTP edge too, so a
+leaked worker credential would be a full administrative login. With a role of its own, the gateway
+refuses it on every route, and each service admits it per RPC exactly as it admits `admin`.
+
+Its subject is the name its credential was issued under, not a user id. That is why a person-only
+guard tests the **role**, never the shape of the subject:
+
+```swift
+private func userId(of identity: Identity) throws -> UUID {
+    guard identity.role != .service, let userId = UUID(uuidString: identity.subject) else {
+        throw RPCError(code: .permissionDenied, message: "This operation requires a user.")
+    }
+    return userId
+}
+```
+
+A credential can be issued under any name, including one shaped like a UUID; a guard that only
+parsed the subject would let such a process through as that user. Test the role first, then parse.
+Do not instead forbid UUID-shaped credential ids at issue time as the sole defence — that protects
+only the guards that exist today, and the next one written by copying the old pattern reopens it.
+
+Which RPCs admit a process is the receiving service's decision, per RPC, like the admin check.
+Granting and revoking an entitlement are what a payment does, so they take `admin` or `service`;
+listing a user's own devices is what a person does, so `service` is refused:
+
+```swift
+private func requireAdminOrService() throws {
+    switch try requireIdentity().role {
+    case .admin, .service: return
+    case .user: throw RPCError(code: .permissionDenied, message: "Administrator or service access is required.")
+    }
+}
+```
+
+The HTTP gateway is for people. Every route that acts on "the caller's own" account sends
+`identity.subject` upstream as a user id, so give `IdentityRequestContext` a `requireUser()` that
+refuses `role: service` with `403` before the subject leaves the process — otherwise a users service
+reports the credential name as a malformed id, which is the wrong error for the right refusal.
+
+## Service credentials and issuance
+
+A process authenticates the way a person does with a password, and the issuer treats it the same
+way. The authenticating service keeps a `ServiceCredential` — an id, the bcrypt digest of a
+secret, a creation date — and exposes one RPC:
+
+```proto
+rpc IssueServiceToken(IssueServiceTokenRequest) returns (IssueServiceTokenResponse);
+
+message IssueServiceTokenRequest  { string client_id = 1; string client_secret = 2; }
+message IssueServiceTokenResponse { string access_token = 1; google.protobuf.Timestamp expiration_date = 2; }
+```
+
+Its own response type, not the session type: a process gets no refresh token — it holds its secret
+and exchanges it again — and a session with an empty refresh field would make the contract lie.
+It is a public method, excluded from identification like login, because it is how a process obtains
+the token it would otherwise present. An unknown id and a wrong secret answer the same
+`unauthenticated`, so nothing reaching the port can enumerate which service names exist.
+
+Issue a credential with an operator command on the issuing service, never an RPC — issuing is what
+lets a process obtain tokens, so it must not be reachable by anything holding one:
+
+```sh
+authentication service-credentials create --id payments-worker > secrets/payments-worker.secret
+```
+
+Mint the secret rather than accept one, store only its digest, print it once to standard output and
+nothing else there, so a redirect captures exactly the secret. Validate the id as a name — non-empty,
+no whitespace — and nothing more; the role guard above is what keeps a name out of person-only
+operations. The credential lives in the issuer's database, so rotation is a row and a restart, not
+a redeploy of the issuer, and it comes into being only after that database is migrated: the first
+start of a stack is staged — infrastructure and the issuer, issue the credential, then everything.
+
+Give the token its own lifetime, `JWT_SERVICE_TOKEN_EXPIRATION`, beside the session's. It is a
+different trade-off: with no refresh token to delete, the token's expiry *is* how long revoking a
+credential takes to bite. Keep it comfortably above the session's refresh window below — at or under
+it, every call would refresh.
+
+## Presenting a process's own identity
+
+The consumer side lives in the identity package and knows nothing about the issuer's contract:
+
+- `ServiceIdentityClient` — a protocol: credentials in, a token out, typed errors
+  `invalidCredentials` / `unavailable` / `unknown`. The split is the point: refused credentials
+  mean the process's standing is gone and no retry helps; an unreachable issuer says nothing about
+  the credentials.
+- `ServiceIdentitySession` — an actor holding the credentials and the token they last bought, with
+  one `State`: `unauthenticated`, `authenticated(token)`, or `authenticating(task)`. `accessToken`
+  returns the held token unless it is within five minutes of expiry, in which case it refreshes and
+  the caller waits for the new one. `refresh()` joins an exchange already in flight rather than
+  starting a second, which is what "one in flight" means; because several callers settle the same
+  task in turn, only the exchange the session is still waiting on may record its outcome, or a late
+  caller from a failed one would overwrite a newer exchange and the next call would start a third.
+- `ServiceIdentityInterceptor` — a client interceptor that attaches the session's token to every
+  call and, when the receiver refuses it as `unauthenticated` *at acceptance* (before any message
+  crossed, so the request can be resent whole), refreshes once and resends. Once: a second refusal
+  means the credential itself is no good. Its errors reach the caller through
+  `RPCErrorConvertible`, which grpc-swift applies to whatever an interceptor throws — refused
+  credentials as `unauthenticated`, an unreachable issuer as `unavailable`.
+
+A client carrying this interceptor speaks as the process on every call, whatever identity is
+bound at the time. A process that also forwards callers does so through a *separate* client
+carrying the forwarding interceptor; registering both on one client would leave the header to
+whichever ran last. One client per identity.
+
+The conformance that speaks `IssueServiceToken` behind the protocol needs both the identity package
+and the authentication contract, and belongs to neither: the identity package must not learn what
+an issuer's contract looks like, the protos package is generated contract and nothing else, and the
+issuing service's own package would drag its whole graph into every consumer. Put it in a third
+package, `<project>-service-identity`, depending on both, with one product and one type. Every
+process that acts as itself depends on it; the issuer's package never does.
+
+In the composition root, build the session over the adapter, put the interceptor on the client that
+speaks as the process, and exchange once at startup racing the service group — so a wrong secret or
+an unreachable issuer fails the process there, naming the problem, rather than failing the first
+activity minutes after the deploy looked fine. Configure the credential as `SERVICE_CREDENTIAL_ID`
+and a `SERVICE_CREDENTIAL_SECRET_PATH` to the mounted file, trimming the trailing newline the
+issuing command wrote.
 
 ## Reading the credential
 

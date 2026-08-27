@@ -25,6 +25,8 @@ package protocol Database<Context>: Sendable {
 
 Use `withConnection` for one repository call. Use `withTransaction` only when two or more persistence operations form one atomic business action. Do not default reads or single writes to transactions.
 
+The exception is a service that confines callers with row-level security. There the caller's identity is stamped on the transaction and the policies read it from there, so a read outside a transaction sees no rows; that service's protocol declares `withTransaction` alone, with a comment saying why there is deliberately no cheaper entry point. See *Row-level security* in persistence.md.
+
 Do not hold a transaction across a remote call. The connection is pooled, so a slow dependency becomes pool exhaustion and one service's latency spike takes this service down with it.
 
 The narrow exception is rotating a single-use secret: consume the old row, call the dependency, insert the replacement. If the call instead runs after the commit, a dependency outage destroys a credential whose validity that dependency has nothing to do with — a brief blip logs out every caller that happens to rotate during it. Take the exception only when the remote call is one fast read, the transaction is short, the alternative is destroying a caller's credential, and the call carries a deadline well under the pool's wait time. Set that deadline explicitly; without one the pool is bounded by the dependency's worst case.

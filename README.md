@@ -14,6 +14,8 @@ The skill standardizes:
 - a Hummingbird API gateway with layered request contexts, tiered routing, and HTTP-to-RPC translation
 - durable Temporal workflows, Activities, signals, queries, clients, and worker composition
 - a shared identity package, single-issuer signing keys, and caller identification and propagation
+- service identities for workers and other processes: a `service` role, operator-issued credentials, token exchange, and a refreshing session behind a client interceptor
+- Postgres row-level security under an application role, stamped per transaction from the caller's identity
 - service boundaries, communication choices, consistency, resilience, security, and observability
 - PostgreSQL 18 and Docker Compose deployment topology
 - staged data migration, rollout, and monolith retirement
