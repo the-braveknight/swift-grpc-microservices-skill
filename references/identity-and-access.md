@@ -175,25 +175,32 @@ own record, or any record if you are an admin". The second kind is most of real 
 has to live in the handler anyway; an enforcing interceptor added early leaves two mechanisms
 maintained for one decision.
 
-Write the check in the handler until three or more RPCs need the same purely static role rule. Only
-then lift it into a `RoleServerInterceptor(allowedRoles:)` in the shared package's gRPC product,
-applied per method in the composition root so the whole policy reads in one place. Have it read the
-already-bound identity rather than verifying the token a second time, and have it refuse an
-anonymous caller rather than passing one through.
+The static checks are shared, as statics on the context the interceptor binds, in the gRPC product:
+
+```swift
+IdentityContext.requireIdentity()            // any caller                  → Identity
+IdentityContext.requireUserIdentity()        // a person, with their user id → (identity, userId)
+IdentityContext.requireAdminIdentity()       // an administrator             → (identity, userId)
+IdentityContext.requirePrivilegedIdentity()  // an administrator or a process → Identity
+```
+
+A handler calls one of these first and keeps only the check that is its own — that a request
+naming a user names the caller, say. They are functions rather than an enforcing interceptor
+because a server interceptor is dispatched on `MethodDescriptor` and cannot read the request, so
+it can say "an admin may call this" but not "your own record, or any if you are an admin"; the
+call in the handler puts both kinds of check in one place. They are `@discardableResult`, since a
+handler often wants only the refusal, and the person-shaped ones return the parsed user id so it
+is parsed once.
 
 ## Authorization lives in the service
 
 The token supplies the role. Each service decides what that role may do inside it, in its own code,
-next to what it protects.
+next to what it protects, by calling the shared check that names the audience:
 
 ```swift
-private func requireAdmin() throws {
-    guard let identity = IdentityContext.current?.identity else {
-        throw RPCError(code: .unauthenticated, message: "Authentication is required.")
-    }
-    guard identity.role == .admin else {
-        throw RPCError(code: .permissionDenied, message: "Administrator access is required.")
-    }
+package func listUsers(request: …, context: ServerContext) async throws -> … {
+    try IdentityContext.requireAdminIdentity()
+    …
 }
 ```
 
