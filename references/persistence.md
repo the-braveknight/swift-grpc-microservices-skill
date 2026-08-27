@@ -276,6 +276,8 @@ no rows. Drop `withConnection` from the service's `Database` protocol rather tha
 looks cheaper and silently opens a transaction; the single-operation rule in *Transaction policy*
 does not apply to a service that confines with policies.
 
+**A worker stamps its own service identity.** The stamp above comes from the inbound `IdentityContext` a request carries. A process that *originates* its own work — a Temporal worker, a scheduled job — carries none, so every one of its transactions against its own RLS tables stamps nothing and the policies admit no rows: a reconcile reads its own customer row back as absent. The process is a service and must say so. It cannot fabricate an identity — the payload's initializer is the signer's alone (rule 27) — so it verifies the service token it already holds (the one it presents to other services, rule 38) into an `Identity` and binds it for the duration of its database work, and the ordinary stamping path then sets `role: service`. Give the worker the verifying key for this. A small `Database` decorator that derives the current token, verifies it, and wraps `withTransaction` in the identity is the least invasive place; the activity code stays unaware.
+
 **The service still decides what RLS cannot say.** A policy filters; it cannot answer
 `permissionDenied`. An RPC that names a user in the request — claim for this user, list this user's
 entitlements — still checks in the handler that the named user is the caller or the caller is
