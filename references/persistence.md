@@ -284,11 +284,18 @@ privileged, and the person-only RPCs still refuse a process by role. What the po
 deletes as nothing, exactly as if it did not exist, so an id cannot be probed.
 
 **Which services.** A service whose rows belong to callers — entitlements and devices, users,
-customers and subscriptions in a payments service. Not the authenticating service, whose rows are
-credential material looked up *by secret* on anonymous paths (a refresh token by digest, a
-registration by email): a `user_id` policy there breaks refresh for everyone, and the process is
-the trusted issuer. Not a table with no owner, such as newsletter subscribers or a public
-catalogue.
+customers and subscriptions in a payments service. A table with no owner can still take a
+*read* policy: newsletter subscribers are anyone's to add and an administrator's or a process's
+to list, so `FOR INSERT WITH CHECK (true)` beside `FOR SELECT USING (role IN ('admin','service'))`.
+Not the authenticating service, whose rows are credential material looked up *by secret* on
+anonymous paths (a refresh token by digest, a registration by email): a `user_id` policy there
+breaks refresh for everyone, and the process is the trusted issuer. Not a public catalogue.
+
+**`RETURNING` is a read.** Postgres applies the `SELECT` policy to the row an `INSERT … RETURNING`
+hands back, and a caller the policy excludes gets `new row violates row-level security policy`,
+not the row. An insert made by a caller who may not read — the anonymous subscribe — must not
+`RETURNING`, and the RPC then answers with acceptance rather than the record. Change the contract
+to say so rather than stamping the record's dates in the service.
 
 **Verify as the service role.** Run the service against the role the policies apply to and
 probe with three tokens — a user, another user, an administrator — plus a process. As the owner,
