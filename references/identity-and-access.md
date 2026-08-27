@@ -10,10 +10,14 @@ Put the claim payload, the signer, the verifier, and one adapter per transport i
 - `Identity` — the payload, the signer, the verifier, and the task local. Depends on JWTKit only.
 - `IdentityGRPC` — the server and client interceptors. Depends on `Identity` and `GRPCCore`.
 - `IdentityHTTP` — the authenticating middleware. Depends on `Identity` and Hummingbird.
+- `ServiceIdentity` — a process's own identity: the session, its interceptor, and the adapter
+  that speaks `IssueServiceToken`. Depends on `Identity`, `IdentityGRPC`, and the authentication
+  contract from `<project>-protos` — the one product that does.
 
 It is a separate package from `<project>-protos` because it is runtime behavior rather than a
 contract, and separate products because a gRPC-only service must not link Hummingbird to verify a
-token. Core may link `Identity`; it is a focused shared package, not an infrastructure SDK.
+token, and a service that only verifies must not link the authentication contract. Core may link
+`Identity`; it is a focused shared package, not an infrastructure SDK.
 
 Because it is consumed by tag, a source edit here is invisible to every service until it is tagged
 and each consumer's `Package.resolved` is updated. Verify a cross-repo change before tagging by
@@ -279,9 +283,13 @@ rather than per call, so a service cannot forget it.
 A call made outside a caller's request — startup work, a workflow Activity, a scheduled job — has
 nothing to forward, and the forwarding interceptor sends it out unauthenticated rather than failing.
 A process that should identify itself on such calls presents its own identity instead, through a
-separate client — see *Processes* below. The corollary still holds for the issuer: an RPC the
-authenticating service calls before any caller exists must be reachable by whatever that service
-presents, which is nothing until it too holds a credential.
+separate client — see *Processes* below. That includes the issuer: the authenticating service
+reaches the users service before any caller exists — signing someone in, refusing a duplicate
+registration — so it holds a credential of its own and exchanges it through its own
+`IssueServiceToken`, over the network, exactly like every other process. It could sign for
+itself instead, since it holds the key; do not. One mechanism for every process is worth one
+credential and one round trip, and it keeps the issuer from being the one process that
+authenticates differently from the rest.
 
 ## Processes: the service role
 
@@ -391,12 +399,14 @@ bound at the time. A process that also forwards callers does so through a *separ
 carrying the forwarding interceptor; registering both on one client would leave the header to
 whichever ran last. One client per identity.
 
-The conformance that speaks `IssueServiceToken` behind the protocol needs both the identity package
-and the authentication contract, and belongs to neither: the identity package must not learn what
-an issuer's contract looks like, the protos package is generated contract and nothing else, and the
-issuing service's own package would drag its whole graph into every consumer. Put it in a third
-package, `<project>-service-identity`, depending on both, with one product and one type. Every
-process that acts as itself depends on it; the issuer's package never does.
+The conformance that speaks `IssueServiceToken` behind the protocol needs the authentication
+contract. It lives in the `ServiceIdentity` product of the identity package, which is the one
+product there that links `<project>-protos`: `Identity`, `IdentityGRPC` and `IdentityHTTP` stay
+linkable without the contract, so a service that only verifies never pulls it in, and a process
+that acts as itself links one product and gets the session, the interceptor and the adapter
+together. Not the protos package, which is generated contract and nothing else; not the issuing
+service's own package, which would drag its whole graph into every consumer; and not a fourth
+package, which is one more tag to keep in step for one type.
 
 In the composition root, build the session over the adapter, put the interceptor on the client that
 speaks as the process, and exchange once at startup racing the service group — so a wrong secret or

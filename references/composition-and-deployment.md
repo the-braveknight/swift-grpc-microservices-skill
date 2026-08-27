@@ -158,7 +158,7 @@ let temporalWorker = try TemporalWorker(
 
 Add the worker and every long-lived dependency used by Activities to one `ServiceGroup`. Do not add a five-second registration scanner or another periodic database-to-Temporal reconciliation service. Temporal owns durable workflow execution.
 
-A worker has no inbound request to forward, so it speaks as itself (see *Presenting a process's own identity* in identity-and-access.md). Under Infrastructure, construct a client to the issuer with no interceptor — the exchange authenticates by the secret in the request — and a `ServiceIdentitySession` over the `<project>-service-identity` adapter; put `ServiceIdentityInterceptor(session:)` on every client the worker calls as itself. Under Lifecycle, race one exchange against the group so a wrong secret or an unreachable issuer fails the worker at startup naming the problem:
+A worker has no inbound request to forward, so it speaks as itself (see *Presenting a process's own identity* in identity-and-access.md). Under Infrastructure, construct a client to the issuer with no interceptor — the exchange authenticates by the secret in the request — and a `ServiceIdentitySession` over `ServiceIdentity`'s `IssueServiceToken` adapter; put `ServiceIdentityInterceptor(session:)` on every client the worker calls as itself. Under Lifecycle, race one exchange against the group so a wrong secret or an unreachable issuer fails the worker at startup naming the problem:
 
 ```swift
 try await withThrowingTaskGroup { group in

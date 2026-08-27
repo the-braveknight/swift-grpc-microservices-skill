@@ -270,6 +270,13 @@ privileged, and the person-only RPCs still refuse a process by role. What the po
 *confinement* of id-only RPCs: an entitlement or device belonging to somebody else lists as empty and
 deletes as nothing, exactly as if it did not exist, so an id cannot be probed.
 
+**Which services.** A service whose rows belong to callers — entitlements and devices, users,
+customers and subscriptions in a payments service. Not the authenticating service, whose rows are
+credential material looked up *by secret* on anonymous paths (a refresh token by digest, a
+registration by email): a `user_id` policy there breaks refresh for everyone, and the process is
+the trusted issuer. Not a table with no owner, such as newsletter subscribers or a public
+catalogue.
+
 **Verify as the application role.** Run the service against the role the policies apply to and
 probe with three tokens — a user, another user, an administrator — plus a process. As the owner,
 every case passes with the policies off, which proves nothing. Check the policy text itself too
