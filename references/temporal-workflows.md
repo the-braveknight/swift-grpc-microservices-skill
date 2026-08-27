@@ -220,10 +220,12 @@ This preserves cancellation: if the parent Workflow was cancelled rather than me
 
 Register `Worker.self` beside `Serve.self` and `Database.self` in the executable command tree. Run `TemporalWorker` from the `worker` subcommand, not from the gRPC `serve` command.
 
+The worker owns no database. An Activity resolves and records through the services that own the data, over gRPC, authenticated as a service (identity-and-access.md, rules 37–38) — the same clients it uses to call any other service. This keeps a service's rows reached one way, through its contract and its server interceptor, whether the caller is a request or this worker; a worker with its own `PostgresClient` reintroduces a second path into that data and, where the tables carry row-level security, a second identity-stamping mechanism beside the interceptor's (persistence.md). Give the owning service the operations the worker needs, gated to `service`/`admin`, rather than a connection to the worker.
+
 The worker composition root owns:
 
 - configuration and logging;
-- one Postgres client when Activities need persistence;
+- long-lived service clients its Activities call (each with the service-identity interceptor); a Postgres client only if the worker genuinely owns data no service fronts — normally it does not;
 - long-lived gRPC/provider clients used by Activities;
 - the concrete Core Activity service;
 - one `TemporalWorker` with explicit workflow definitions and Activity containers;
