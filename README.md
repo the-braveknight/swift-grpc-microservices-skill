@@ -17,7 +17,7 @@ The skill standardizes:
 - service identities for workers and other processes: a `service` role, operator-issued credentials, token exchange, and a refreshing session behind a client interceptor
 - Postgres row-level security under an application role, stamped per transaction from the caller's identity
 - service boundaries, communication choices, consistency, resilience, security, and observability
-- PostgreSQL 18 and Docker Compose deployment topology
+- one environment reference — images, Compose, ports, secrets, the tailnet sidecar that gives the gateway its address, the staged first start — kept out of every other file
 - staged data migration, rollout, and monolith retirement
 
 The complete agent instructions are in [SKILL.md](SKILL.md). Detailed conventions are loaded from [references](references) as needed.

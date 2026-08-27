@@ -487,42 +487,10 @@ never briefly world-readable between creation and `chmod`, and add the directory
 
 ## Deployment
 
-Mount each key as a deployment secret and give every service the path, not the document. Declare
-verification once and merge it into every service that verifies a token, including the issuing
-service when it protects any RPC of its own:
-
-```yaml
-x-jwt-verification: &jwt-verification
-  JWT_PUBLIC_KEY_PATH: /run/secrets/jwt-public
-
-secrets:
-  jwt-public:
-    file: ./secrets/jwt-public.pem
-  jwt-private:
-    file: ./secrets/jwt-private.pem
-
-services:
-  authentication:
-    environment:
-      <<: [*postgres-connection, *jwt-verification]
-      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt-private
-    secrets:
-      - jwt-public
-      - jwt-private
-```
-
-Compose refuses to start when a secret's source file is missing, so a stack without keys fails at
-`up` rather than at the first request — the same guarantee a `${VAR:?message}` guard gives a
-variable.
-
-Verify the anchor is actually merged. An unreferenced YAML anchor is silently ignored, so a
-`${VAR:?message}` guard inside one never fires and the stack starts without a value the service
-requires. `docker compose config <service>` shows what a service will really receive.
-
-On a platform without compose secrets, the equivalent is a file mount plus the path variable. Note
-that most will deploy a container whose mount is missing rather than refusing, so the failure
-appears in the logs as an unreadable key instead of a failed deploy; check them after the first
-rollout rather than reading a green deploy as proof the mount landed.
+Each key is a mounted file, every service that verifies gets the public one, only the issuer
+gets the private one, and a stack missing either fails to start. How that is expressed — mounts,
+the shared verification anchor, a service's own credential, the staged first start — is in
+[environment.md](environment.md).
 
 Rotating means generating a new pair and restarting every service. Access tokens signed by the old
 key stop verifying and clients recover on their next refresh, provided refresh tokens are database

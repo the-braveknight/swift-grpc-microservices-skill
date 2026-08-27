@@ -1,4 +1,4 @@
-# Composition roots and deployment
+# Composition roots
 
 ## Contents
 
@@ -7,8 +7,6 @@
 - Serve composition root
 - Temporal worker composition root
 - Migration composition root
-- Container build
-- Docker Compose topology
 
 ## Command tree
 
@@ -83,7 +81,7 @@ TEMPORAL_TASK_QUEUE=catalog
 LOG_LEVEL=info
 ```
 
-Require infrastructure values and secrets. Defaults are acceptable for the listen address, listen port, and log level. Put safe development examples in `.env.example`; ignore real `.env` files.
+Require infrastructure values and secrets. Defaults are acceptable for the listen address, listen port, and log level. Where the values come from in a running environment is [environment.md](environment.md)'s subject.
 
 ## Serve composition root
 
@@ -193,69 +191,4 @@ try await withThrowingTaskGroup { group in
 
 The migration command also reads `POSTGRES_SERVICE_ROLE` (a default of `<service>_service` is fine) and `POSTGRES_SERVICE_PASSWORD` (required) and registers `CreateServiceRole` first. Every other command connects as that role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the service role's, not the owner's the migration used.
 
-## Container build
-
-Use this Makefile shape:
-
-```make
-TAG ?= latest
-
-build:
-	swift package --swift-sdk aarch64-swift-linux-musl \
-		--configuration release \
-		--allow-network-connections all build-container-image \
-		--product catalog \
-		--repository ghcr.io/<organization>/<organization>-catalog \
-		--tag $(TAG)
-
-.PHONY: build
-```
-
-Replace only service/product/repository names.
-
-## Docker Compose topology
-
-For each extracted service create:
-
-1. `<service>-postgres` using `postgres:18`, dedicated credentials, health check, and a dedicated volume mounted at `/var/lib/postgresql`.
-2. `<service>-migrate` using the service image and `command: ["database", "migrate"]`, gated on healthy Postgres.
-3. `<service>` using `command: ["serve"]`, gated on successful migration and listening on `50051` inside the network.
-4. `<service>-worker` using the same image with `command: ["worker"]` when Temporal is enabled; give it the same database, dependency, and Temporal configuration required by its Activities.
-5. Consumer environment values `GRPC_<SERVICE>_HOST=<service>` and `GRPC_<SERVICE>_PORT=50051`, with startup gated on the producer.
-
-PostgreSQL 18 changed its image volume layout. For the current convention, mount the volume at `/var/lib/postgresql`; do not set custom `PGDATA` for the extracted service.
-
-Use dedicated variables such as `CATALOG_POSTGRES_USER`, `CATALOG_POSTGRES_PASSWORD`, and `CATALOG_POSTGRES_DB` in a larger deployment compose file, then map them to the service's expected `POSTGRES_*` variables. Never reuse the monolith database credentials merely because both services run in one Compose project.
-
-Compose dependency conditions help startup ordering; they do not replace runtime recovery. The application must tolerate dependency restarts according to grpc-swift and Postgres client behavior.
-
-Publish only what something outside the stack calls. Give Postgres and the Temporal server no `ports:` at all — services reach them by name over the compose network, and an unpublished port cannot collide with whatever already holds `5432` or `7233` on the host. Make each published host port a variable with a default so a conflict is settled in `.env` rather than by editing the file, and reach an internal service with `docker compose exec` instead of reopening a port.
-
-A suite-level compose file runs published images and never builds them: `${REGISTRY:-...}/<image>:${IMAGE_TAG:-latest}` with `pull_policy`. Declare a required secret as `${VAR:?message}` so Compose refuses to start with an actionable error rather than a guessable default, and ship a `.env.example` naming every variable with the required ones left empty, copied to a git-ignored `.env`.
-
-Every service overrides the credentials the shared anchor merges in with its service role's — an explicit key in a mapping wins over `<<:` — while its migration job keeps the owner's and adds the role's for the migration to create:
-
-```yaml
-entitlements-migrate:
-  environment:
-    <<: *postgres-connection
-    POSTGRES_SERVICE_ROLE: ${ENTITLEMENTS_SERVICE_ROLE:-entitlements_service}
-    POSTGRES_SERVICE_PASSWORD: ${ENTITLEMENTS_SERVICE_PASSWORD:-emberfilm}
-
-entitlements:
-  environment:
-    <<: [*postgres-connection, *jwt-verification]
-    POSTGRES_USER: ${ENTITLEMENTS_SERVICE_ROLE:-entitlements_service}
-    POSTGRES_PASSWORD: ${ENTITLEMENTS_SERVICE_PASSWORD:-emberfilm}
-```
-
-A process's service credential is a mounted secret like a key, and it is the one secret that cannot exist before the stack has run: it is issued against the issuer's migrated database. Compose refuses to start a service whose secret file is missing, so the first start is staged, and the `.env.example` says so:
-
-```sh
-docker compose up -d postgres postgres-init authentication-migrate authentication
-docker compose run --rm authentication service-credentials create --id authentication-worker \
-    > secrets/authentication-worker.secret
-docker compose up -d
-```
-
-`docker compose config` validates a file whose secret source is missing; only `up` refuses. Every service that verifies tokens must be the build that decodes the process's role before that process is started, or its every call is refused.
+How a running environment supplies these values — images, secrets, ports, orchestration — is in [environment.md](environment.md) and nowhere else.

@@ -26,7 +26,7 @@ Produce a boundary inventory:
 | Business behavior | Core use cases | Caller-facing protocols only | gRPC-backed implementations |
 | Data | Dedicated service database | No direct access after cutover | Explicit data migration |
 | Contract | Versioned proto | Released proto dependency | Compatible `v1` rollout |
-| Runtime | gRPC server and migrations | Long-lived gRPC client | Compose/internal DNS |
+| Runtime | gRPC server and migrations | Long-lived gRPC client | Internal DNS |
 
 ## 2. Choose extraction order
 
@@ -61,7 +61,7 @@ Prefer additive evolution. Reserve removed fields and names. Do not modify a rel
 6. Copy and adapt Postgres repositories, statements, and migrations. Remove the old service schema because the new service owns the database. Let persistence stamp creation dates.
 7. Add gRPC services and colocated `+Protobuf` mappings.
 8. Add `serve` and `database migrate` composition roots.
-9. Add `.env.example`, `Makefile`, standalone Compose when appropriate, and container build configuration.
+9. Add the service's environment pieces per [environment.md](environment.md).
 10. Build the entire producer.
 
 When copying as-is conflicts with a settled convention, make only the boundary-required adjustment. Examples: convert `public` to `package`, change a schema-qualified table to an unqualified table, or replace an old shared monolith database wrapper with the Core `Database` protocol.
@@ -84,9 +84,9 @@ Do not leave the old Postgres database/context variable in composition once no l
 2. Add `<service>-postgres` with Postgres 18 and `/var/lib/postgresql` volume mounting.
 3. Add `<service>-migrate`, gated on the database health check.
 4. Add `<service>`, gated on successful migration and available only on the internal network.
-5. Add consumer `GRPC_<SERVICE>_HOST` and `_PORT` using the Compose service DNS name.
+5. Add consumer `GRPC_<SERVICE>_HOST` and `_PORT` using the producer's name on the internal network.
 6. Add a consumer dependency on the service for startup ordering.
-7. Render/validate Compose and verify image names and commands.
+7. Render and validate the environment ([environment.md](environment.md)) and verify image names and commands.
 
 On a managed container platform or any other ingress, expose only the public HTTP edge. Keep gRPC service-to-service traffic private. Use platform TLS at the edge; revisit mTLS only when the threat model requires it.
 
@@ -125,7 +125,7 @@ Run the smallest checks early and full checks at gates:
 | Proto package | `swift build`; inspect target/product and versioned path |
 | Producer | `swift build`, migration registration, executable help/command tree |
 | Consumer | full build; search for direct persistence references |
-| Deployment | Compose config/render, database health gate, migration completion gate, internal DNS/env alignment |
+| Deployment | Environment render, database health gate, migration completion gate, internal DNS/env alignment |
 
 Also inspect the final diff and dirty state in every repository. Do not claim failures caused by pre-existing changes were introduced by the extraction.
 
