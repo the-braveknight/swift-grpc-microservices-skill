@@ -8,6 +8,7 @@ Keep every Postgres type in `<Service>Postgres`, except executable configuration
 - Repositories and statements
 - Idempotent writes
 - Database ownership and migrations
+- The service role
 - Row-level security
 - Transaction policy
 
@@ -184,35 +185,47 @@ Name stored dates `creation_date`, `update_date`, `expiration_date`, `consumptio
 
 Do not delete the monolith's table or migration during the copy phase. Complete producer and consumer verification, decide how existing data moves, execute the cutover, and only then remove old persistence. Schema/table deletion and data migration are destructive product decisions; ask when the desired strategy is not stated.
 
+## The service role
+
+Every service has two Postgres roles, and its **first migration** creates the second one:
+
+- the owner — `POSTGRES_USER` — runs `database migrate` and owns every table;
+- the service role — `<service>_service`, from `POSTGRES_SERVICE_ROLE` / `POSTGRES_SERVICE_PASSWORD`
+  — is what `serve`, `worker`, and every other command that reads or writes data connect as. It
+  may read and write the service's tables and nothing more.
+
+```swift
+let migrations = DatabaseMigrations()
+await migrations.add(
+    CreateServiceRole(role: serviceRole, password: servicePassword, database: database)
+)
+await migrations.add(CreateUsersTable())
+```
+
+This is the standard whether or not the service confines rows with policies. Postgres applies no
+policy to a table's owner, so a service that runs as the owner cannot add row-level security later
+without also changing what it connects as; a service that has run as its service role from the
+first migration adds a policy migration and nothing else.
+
+The migration is plain: `CREATE ROLE "<role>" LOGIN PASSWORD '…'`, `GRANT CONNECT` on the
+database, `GRANT USAGE` on `public`, DML on all tables and usage on all sequences, and the same two
+as `ALTER DEFAULT PRIVILEGES` so every table a later migration creates is the role's from the moment
+it exists. `revert` is `DROP ROLE IF EXISTS`. Keep it that simple — no existence checks, no
+quoting helpers; the values are the deployment's own configuration. Roles are cluster-wide, so a
+database dropped and re-migrated in a cluster that still has the role fails on `CREATE ROLE`;
+drop the role with the database.
+
+The migration library refuses a list whose order differs from what is applied — it throws, it does
+not revert — so a service that adopts this after its tables are applied cannot slide the role in
+first without re-migrating from scratch. Adopt it at the first migration.
+
 ## Row-level security
 
 When a service's rows belong to callers — a user's entitlements, a user's devices — confine callers
 in Postgres, not in the statements. Restating the rule as a scope bound into every query is the
 same predicate maintained twice, and the copy in the statements is the one that drifts. The rule
-exists once, as policies; the service tells the database who is calling.
-
-**The owner is exempt.** Postgres applies no policy to a table's owner, so a service that connects
-as the role that ran its migrations has every policy applied to nobody and every test passes with
-the policies switched off. Migrate as the owner and create a second role for `serve`:
-
-```swift
-await migrations.add(CreateEntitlementsTable())
-await migrations.add(CreateDevicesTable())
-await migrations.add(
-    CreateApplicationRole(role: applicationRole, password: applicationPassword, database: database)
-)
-await migrations.add(CreateEntitlementsRLSPolicy())
-await migrations.add(CreateDevicesRLSPolicy())
-```
-
-The role migration creates the role only if absent — roles are cluster-wide, and a database dropped
-and re-migrated must not fail on a role that outlived it — sets its password every run so the
-configured one is the one that works, and grants `CONNECT`, DML on all tables, and default
-privileges for tables the later migrations create. `CREATE ROLE`, `GRANT` and `ALTER ROLE …
-PASSWORD` take no bind parameters, so quote the identifier and the literal by hand, doubling any
-embedded quote. Tables first, then the role, then the policies. The alternative, `FORCE ROW LEVEL
-SECURITY` with one role, subjects the migrator to the policies too and makes every future data
-migration set a role first; prefer the second role.
+exists once, as policies; the service tells the database who is calling. The policies are enforced
+against the service role above, which is why it exists before any of them.
 
 **Stamp the transaction, not the connection.** The database learns who is calling from two
 transaction-local settings the policies read:
@@ -277,7 +290,7 @@ registration by email): a `user_id` policy there breaks refresh for everyone, an
 the trusted issuer. Not a table with no owner, such as newsletter subscribers or a public
 catalogue.
 
-**Verify as the application role.** Run the service against the role the policies apply to and
+**Verify as the service role.** Run the service against the role the policies apply to and
 probe with three tokens — a user, another user, an administrator — plus a process. As the owner,
 every case passes with the policies off, which proves nothing. Check the policy text itself too
 (`pg_policies`), since a renamed setting in code and an unrenamed one in a migration already applied

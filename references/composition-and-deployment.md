@@ -191,7 +191,7 @@ try await withThrowingTaskGroup { group in
 }
 ```
 
-When the service confines callers with row-level security, the migration command also reads `POSTGRES_APP_ROLE` (a default is fine) and `POSTGRES_APP_PASSWORD` (required) and registers the role migration after the table migrations and before the policies. `serve` then connects as that role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the application role's, not the owner's the migration used.
+The migration command also reads `POSTGRES_SERVICE_ROLE` (a default of `<service>_service` is fine) and `POSTGRES_SERVICE_PASSWORD` (required) and registers `CreateServiceRole` first. Every other command connects as that role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the service role's, not the owner's the migration used.
 
 ## Container build
 
@@ -233,20 +233,20 @@ Publish only what something outside the stack calls. Give Postgres and the Tempo
 
 A suite-level compose file runs published images and never builds them: `${REGISTRY:-...}/<image>:${IMAGE_TAG:-latest}` with `pull_policy`. Declare a required secret as `${VAR:?message}` so Compose refuses to start with an actionable error rather than a guessable default, and ship a `.env.example` naming every variable with the required ones left empty, copied to a git-ignored `.env`.
 
-A service that connects as an application role overrides the credentials the shared anchor merges in — an explicit key in a mapping wins over `<<:` — while its migration job keeps the owner's and adds the role's:
+Every service overrides the credentials the shared anchor merges in with its service role's — an explicit key in a mapping wins over `<<:` — while its migration job keeps the owner's and adds the role's for the migration to create:
 
 ```yaml
 entitlements-migrate:
   environment:
     <<: *postgres-connection
-    POSTGRES_APP_ROLE: ${ENTITLEMENTS_APP_ROLE:-entitlements_app}
-    POSTGRES_APP_PASSWORD: ${ENTITLEMENTS_APP_PASSWORD:-emberfilm}
+    POSTGRES_SERVICE_ROLE: ${ENTITLEMENTS_SERVICE_ROLE:-entitlements_service}
+    POSTGRES_SERVICE_PASSWORD: ${ENTITLEMENTS_SERVICE_PASSWORD:-emberfilm}
 
 entitlements:
   environment:
     <<: [*postgres-connection, *jwt-verification]
-    POSTGRES_USER: ${ENTITLEMENTS_APP_ROLE:-entitlements_app}
-    POSTGRES_PASSWORD: ${ENTITLEMENTS_APP_PASSWORD:-emberfilm}
+    POSTGRES_USER: ${ENTITLEMENTS_SERVICE_ROLE:-entitlements_service}
+    POSTGRES_PASSWORD: ${ENTITLEMENTS_SERVICE_PASSWORD:-emberfilm}
 ```
 
 A process's service credential is a mounted secret like a key, and it is the one secret that cannot exist before the stack has run: it is issued against the issuer's migrated database. Compose refuses to start a service whose secret file is missing, so the first start is staged, and the `.env.example` says so:
