@@ -418,8 +418,46 @@ maintain for it.
 
 ## Deployment
 
-Publish the gateway's HTTP port and nothing else. Upstream gRPC services keep no `ports:`; they
-are reachable by service name on the internal network and by nothing outside it.
+Publish nothing on the host, the gateway included. Upstream gRPC services keep no `ports:`; they
+are reachable by service name on the internal network and by nothing outside it. The gateway is
+reached through a sidecar that owns the public address:
+
+```yaml
+api-tailscale:
+  image: tailscale/tailscale:latest
+  hostname: emberfilm-api                      # the node, and so the DNS name, on the tailnet
+  environment:
+    TS_AUTHKEY: ${TS_AUTHKEY:-}                # first registration only; state re-registers itself
+    TS_SERVE_CONFIG: /config/serve-api.json    # HTTPS on 443 → http://127.0.0.1:8080, Funnel if public
+    TS_STATE_DIR: /var/lib/tailscale
+  volumes:
+    - ./state/api:/var/lib/tailscale           # the node's identity and certificate
+    - ./config:/config
+    - /dev/net/tun:/dev/net/tun
+  cap_add: [net_admin, sys_module]
+
+api:
+  network_mode: service:api-tailscale          # same namespace: the sidecar proxies to localhost
+  depends_on:
+    api-tailscale: { condition: service_started }
+  # no ports
+```
+
+The gateway process runs inside the sidecar's network namespace, so the serve config proxies to
+`127.0.0.1:8080` and the gateway still resolves upstreams by compose service name. Tailscale
+terminates TLS with a certificate for the node's name and, with Funnel, serves the public
+internet; without it, the tailnet only. Nothing listens on a host port, so nothing collides with
+whatever else the machine runs and nothing is reachable by IP.
+
+Two consequences worth knowing before a cutover. The public address *is* the node's identity in
+`state/api` — moving a service behind that hostname means moving the state directory into the
+new stack (it is root-owned; copy it through a container), not registering a new node. And the
+serve config routes by path prefix, longest match first, so a strangler cutover — the new
+gateway for most paths, the old one for the few it does not serve yet — is a handler per prefix
+in one config rather than two hostnames.
+
+If the platform has no such sidecar, publish the gateway's HTTP port as a variable and still
+nothing else.
 
 Configure CORS only for browsers that reach the gateway directly. A client whose own server
 proxies to it is same-origin and needs none.
