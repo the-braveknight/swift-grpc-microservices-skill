@@ -75,6 +75,8 @@ Set terminal workflow state only after the corresponding Activity succeeds. Let 
 
 Put every external side effect in an Activity: database work, remote service calls, email delivery, and provider operations. Give each Activity one side effect. Minting a secret and delivering it are two: issue the challenge in one Activity, send it in the next, so a failing delivery retries against the same stored digest instead of rotating the value the recipient already holds. Deleting a secret is a third, run before terminal state is assigned.
 
+Give an activity a distinct registration name whenever two `@ActivityContainer`s on one worker would otherwise share it. The Temporal activity name defaults to the method name, and every container registered on a worker shares one activity-name space — so a `recordPurchase` in two containers registers the same name twice and one silently overrides the other, running the wrong implementation with no error. The Swift `Activities.<Method>` type is still keyed by the Swift method, so only the registration name collides: set `@Activity(name: "RecordLicensePurchase")` on one (or both) and leave the workflow call sites unchanged. Watch the worker log for `Duplicate activity registration` — it is the symptom.
+
 Group feature Activities in one `@ActivityContainer` and inject one narrow Core service protocol:
 
 ```swift

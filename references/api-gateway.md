@@ -297,6 +297,10 @@ A `compactMap` over a malformed field returns a shorter list and a `200`, so a c
 record that has disappeared rather than an error anybody investigates. A value the upstream
 service should never have produced is a fault in that service and should say so.
 
+## Idempotency keys the client does not carry
+
+A service create may take an idempotency key (persistence.md, rule 23) that the HTTP client has no natural way to supply — an administrator creating a catalogue row does not hold a stable operation id. Keep the key out of the OpenAPI request and mint one in the gateway conversion, so the HTTP surface stays clean while the service's create contract and its own unique constraints still hold. This is not the same as idempotency: a fresh key per request means each HTTP call is a new logical attempt, and true de-duplication rests on the resource's unique column (a Stripe price id, an email). Expose the key at HTTP only when the client genuinely retries a specific operation and can carry the same key across attempts.
+
 ## Error translation
 
 Answer every failure as RFC 9457 problem details with `application/problem+json`, and map
