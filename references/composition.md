@@ -98,27 +98,20 @@ func run() async throws {
 }
 ```
 
-Under Logging, bootstrap the logging system **inline** — never hide it behind a helper that returns the handler. Build one `LokiLogProcessor`, then `LoggingSystem.bootstrap` a `MultiplexLogHandler` of `StreamLogHandler.standardOutput` and a `LokiLogHandler`, so every line reaches both the container's stdout and Loki. Give every line the same identity: the shared `<project>-observability` package (product `Observability`, pinned by tag like the protos and identity packages) exports `LokiLogProcessorConfiguration(config:)` and a `ServiceMetadata` value — `service`, `component` (`serve`/`worker`/`migrate`), `environment`, `version`. Set `ServiceMetadata.base` as the handler metadata and pass `service` and `lokiLabels` to the Loki handler, so the four fields become indexed Loki labels and inline stdout fields. The observability package factors out only these pieces; the `LoggingSystem.bootstrap` call itself stays visible in each executable.
+Under Logging, bootstrap the logging system **inline** — never hide it behind a shared helper or module. Build one `LokiLogProcessor`, then `LoggingSystem.bootstrap` a `MultiplexLogHandler` of `StreamLogHandler.standardOutput` and a `LokiLogHandler`, so every line reaches both the container's stdout and Loki. Pass the service name to the Loki handler's `service:` so its lines carry a `service` label. Each service keeps its own `LokiLogProcessorConfiguration+ConfigReader.swift` beside its other configuration extensions (`config.scoped(to: "loki")`, `LOKI_URL`, defaulting to `http://localhost:3100`) — a small extension duplicated per service, not a shared observability package. Do not extract a shared logging module; the duplication is cheaper than the coupling.
 
 ```swift
 // MARK: - Logging
 let lokiProcessor = LokiLogProcessor(
     configuration: LokiLogProcessorConfiguration(config: config.scoped(to: "loki"))
 )
-let logMetadata = ServiceMetadata(service: "catalog", component: "serve", config: config)
 let logLevel = config.string(forKey: "logLevel", default: Logger.Level.info)
 LoggingSystem.bootstrap { label in
     var handler = MultiplexLogHandler([
         StreamLogHandler.standardOutput(label: label),
-        LokiLogHandler(
-            label: label,
-            service: logMetadata.service,
-            lokiLabels: logMetadata.lokiLabels,
-            processor: lokiProcessor
-        ),
+        LokiLogHandler(label: label, service: "catalog", processor: lokiProcessor),
     ])
     handler.logLevel = logLevel
-    handler.metadata = logMetadata.base
     return handler
 }
 let logger = Logger(label: "catalog")
@@ -200,7 +193,7 @@ try await withThrowingTaskGroup { group in
 
 ## Migration composition root
 
-The migration command uses the same configuration extension. It is short-lived and owns no `ServiceGroup`, so it does not ship to Loki: bootstrap `StreamLogHandler.standardOutput` alone, still carrying `ServiceMetadata(service:, component: "migrate", config:).base` so a migration line reads with the same identity as the rest. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
+The migration command uses the same configuration extension. It is short-lived and owns no `ServiceGroup`, so it does not ship to Loki — bootstrap `StreamLogHandler.standardOutput` alone. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
 
 ```swift
 try await withThrowingTaskGroup { group in

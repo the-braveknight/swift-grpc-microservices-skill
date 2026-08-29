@@ -26,7 +26,8 @@ Use this package set for the architecture in this skill. Treat these versions as
 | `swift-argument-parser` | `1.8.2` | `ArgumentParser` for `serve` and `database migrate` commands |
 | `swift-configuration` | `1.2.0` | `Configuration` and `EnvironmentVariablesProvider` |
 | `swift-service-lifecycle` | `2.11.0` | `ServiceLifecycle` and `ServiceGroup` |
-| `swift-log` | `1.15.0` | `Logging` |
+| `swift-log` | `1.15.0` | `Logging` facade (also linked by `<Service>Core` so use cases log domain events) |
+| `swift-log-loki` | `2.0.0` | `LoggingLoki` — in-process log shipping to Grafana Loki |
 | `postgres-migrations` | `1.2.0` | `PostgresMigrations` |
 | `postgres-nio` | `1.33.1` | `PostgresNIO`, `PostgresClient`, prepared statements, and transactions |
 | `grpc-swift-2` | `2.4.0` | `GRPCCore`, `GRPCClient`, and `GRPCServer` |
@@ -46,6 +47,7 @@ dependencies: [
     .package(url: "https://github.com/apple/swift-configuration.git", from: "1.2.0"),
     .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.11.0"),
     .package(url: "https://github.com/apple/swift-log.git", from: "1.15.0"),
+    .package(url: "https://github.com/lovetodream/swift-log-loki.git", from: "2.0.0"),
     .package(url: "https://github.com/hummingbird-project/postgres-migrations.git", from: "1.2.0"),
     .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.33.1"),
     .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.4.0"),
@@ -150,7 +152,14 @@ Use this dependency direction:
 
 ```swift
 targets: [
-    .target(name: "<Service>Core"),
+    .target(
+        name: "<Service>Core",
+        dependencies: [
+            // The swift-log facade only, so use cases can log domain events. Concrete
+            // handlers (Loki, stdout) are wired in the executable, never here.
+            .product(name: "Logging", package: "swift-log"),
+        ]
+    ),
     .target(
         name: "<Service>Postgres",
         dependencies: [
@@ -198,6 +207,7 @@ targets: [
             .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
             .product(name: "GRPCServiceLifecycle", package: "grpc-swift-extras"),
             .product(name: "Logging", package: "swift-log"),
+            .product(name: "LoggingLoki", package: "swift-log-loki"),
             .product(name: "PostgresMigrations", package: "postgres-migrations"),
             .product(name: "PostgresNIO", package: "postgres-nio"),
             .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),

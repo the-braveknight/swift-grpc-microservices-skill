@@ -81,9 +81,11 @@ Keep use-case construction generic over `DatabaseType`, expose it through `XUseC
 ```swift
 package struct CreateItemUseCase<DatabaseType>: CreateItemUseCaseProtocol where DatabaseType: Database, DatabaseType.Context: CreateItemUseCaseContext {
     private let database: DatabaseType
+    private let logger: Logger
 
-    package init(database: DatabaseType) {
+    package init(database: DatabaseType, logger: Logger) {
         self.database = database
+        self.logger = logger
     }
 
     package func callAsFunction(
@@ -94,11 +96,14 @@ package struct CreateItemUseCase<DatabaseType>: CreateItemUseCaseProtocol where 
         }
 
         do {
-            return try await database.withConnection { context in
+            let item = try await database.withConnection { context in
                 let command = CreateItemCommand(identifier: input.identifier)
                 return try await context.itemRepository.create(command)
             }
+            logger.info("Item created", metadata: ["itemId": "\(item.id)"])
+            return item
         } catch ItemRepositoryError.duplicateIdentifier {
+            logger.warning("Item create rejected: duplicate identifier", metadata: ["identifier": "\(input.identifier)"])
             throw .duplicateIdentifier
         } catch {
             throw .unknown
@@ -106,5 +111,7 @@ package struct CreateItemUseCase<DatabaseType>: CreateItemUseCaseProtocol where 
     }
 }
 ```
+
+Inject a `Logger` into every use case that performs a meaningful mutation or a notable failure, and log the domain event at the boundary: `info` on the success path (after the write commits, before returning), `warning` on a known/recoverable failure branch (not-found, duplicate, rejected), `error` only for a genuine failure. Attach the identifiers that make a line searchable as metadata (`itemId`, `userId`, a correlation id) — never secrets, tokens, or full payloads. A pure list/get use case takes no logger unless it warns on not-found. This is the swift-log facade — permitted in Core by governing rule 3 — while the concrete Loki/stdout handlers are wired only in the composition root ([composition.md](composition.md)); the composition root passes its `logger` into each use case's initializer.
 
 Do not pass `Date`, a clock, or a `now` closure into this use case merely to stamp a record. The repository owns that persistence concern.

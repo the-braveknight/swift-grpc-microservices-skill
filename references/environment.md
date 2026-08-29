@@ -272,13 +272,11 @@ declares the Loki datasource (`type: loki`, `url: http://loki:3100`, `isDefault:
 comes up ready to query with no manual step.
 
 One anchor carries the observability wiring into every service — merged the same way as the
-Postgres and JWT anchors, so serve, worker, and migrate alike log with a consistent identity:
+Postgres and JWT anchors, so every serve and worker ships to the same Loki:
 
 ```yaml
 x-observability: &observability
   LOKI_URL: ${LOKI_URL:-http://loki:3100}   # unset it to log to stdout alone
-  ENVIRONMENT: ${ENVIRONMENT:-production}   # names the deployment on every label
-  SERVICE_VERSION: ${IMAGE_TAG:-latest}     # the running build, on every label
 ```
 
 Reuse across a cutover works like the gateway's node: Grafana's identity and its stored dashboards

@@ -138,7 +138,7 @@ Establish consistent signals across services:
 - distributed traces across remote boundaries when the operating stack supports them;
 - deployment version and contract version visibility.
 
-Do not log in Core by default. Instrument executable, transport, and infrastructure boundaries. Keep error messages safe for clients while retaining diagnostic context in internal logs. Ship logs to one aggregator so a single query spans services: each process pushes to Grafana Loki in process (a `LokiLogProcessor` multiplexed with stdout, no scraping agent), and every line carries the same four labels — `service`, `component`, `environment`, `version` — from the shared `ServiceMetadata`, with a request or correlation id as structured metadata. [composition.md](composition.md) has the bootstrap; [environment.md](environment.md) has Loki and Grafana.
+Do not log in Core by default. Instrument executable, transport, and infrastructure boundaries. Keep error messages safe for clients while retaining diagnostic context in internal logs. Ship logs to one aggregator so a single query spans services: each process pushes to Grafana Loki in process (a `LokiLogProcessor` multiplexed with stdout, no scraping agent), each line carries a `service` label (the Loki handler's `service:`) and its logger label, with a request or correlation id as metadata. [composition.md](composition.md) has the bootstrap; [environment.md](environment.md) has Loki and Grafana.
 
 Use graceful shutdown signals and lifecycle management. Stop accepting work, allow bounded in-flight completion, close clients/servers, and make restart behavior safe. Run migrations as a one-shot deployment step before starting a service version that requires them.
 
