@@ -13,6 +13,7 @@ the environment lives here; the other references describe the code and say only 
 - Ports
 - Secrets and the staged first start
 - The gateway's address: a tailnet sidecar
+- Log aggregation: Loki and Grafana
 - Verifying what a service receives
 - Platforms without Compose secrets
 
@@ -228,6 +229,61 @@ hostnames.
 
 Where no such sidecar exists, publish the gateway's HTTP port as a variable, and still nothing
 else.
+
+## Log aggregation: Loki and Grafana
+
+Every process ships its own logs. There is no promtail or log-scraping agent: the in-process
+`LokiLogProcessor` batches and pushes to Loki directly (see [composition.md](composition.md)), so
+a service that runs anywhere with a route to Loki is aggregated, container or not. Two long-lived
+services back this, and one env block points every process at them.
+
+```yaml
+# Log store. Single-binary filesystem mode on the image's default config — schema v13, which keeps
+# the per-line structured metadata each service attaches. No host port; only Grafana reads it.
+loki:
+  image: grafana/loki:3.0.0
+  command: ["-config.file=/etc/loki/local-config.yaml"]
+  volumes:
+    - loki-data:/loki
+  restart: unless-stopped
+
+# Dashboards. Behind its own tailnet sidecar, exactly like the gateway — a private node, no host
+# port — and pointed at Loki out of the box by a provisioned datasource.
+grafana:
+  image: grafana/grafana:latest
+  network_mode: service:grafana-tailscale
+  environment:
+    GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+    GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+  volumes:
+    - grafana-data:/var/lib/grafana
+    - ./config/grafana/provisioning:/etc/grafana/provisioning   # datasources/loki.yaml
+  depends_on:
+    loki:
+      condition: service_started
+    grafana-tailscale:
+      condition: service_started
+  restart: unless-stopped
+```
+
+The `grafana-tailscale` sidecar is the gateway's sidecar with a different `hostname` and
+`serve-grafana.json` (proxying `http://127.0.0.1:3000`). `config/grafana/provisioning/datasources/loki.yaml`
+declares the Loki datasource (`type: loki`, `url: http://loki:3100`, `isDefault: true`) so Grafana
+comes up ready to query with no manual step.
+
+One anchor carries the observability wiring into every service — merged the same way as the
+Postgres and JWT anchors, so serve, worker, and migrate alike log with a consistent identity:
+
+```yaml
+x-observability: &observability
+  LOKI_URL: ${LOKI_URL:-http://loki:3100}   # unset it to log to stdout alone
+  ENVIRONMENT: ${ENVIRONMENT:-production}   # names the deployment on every label
+  SERVICE_VERSION: ${IMAGE_TAG:-latest}     # the running build, on every label
+```
+
+Reuse across a cutover works like the gateway's node: Grafana's identity and its stored dashboards
+live in `state/grafana` and `grafana-data`; moving the dashboards behind the same hostname means
+moving that state, not registering a new node.
 
 ## Verifying what a service receives
 
