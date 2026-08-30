@@ -28,6 +28,7 @@ These are the packages the architecture is built on. The versions are a floor fr
 | `swift-service-lifecycle` | `2.11.0` | `ServiceLifecycle` and `ServiceGroup` |
 | `swift-log` | `1.15.0` | `Logging` facade (also linked by `<Service>Core` so use cases log domain events) |
 | `swift-log-loki` | `2.0.0` | `LoggingLoki` — in-process log shipping to the aggregator |
+| `swift-nio` | `2.65.0` | `NIOFoundationCompat` — declared on any executable that links `LoggingLoki` but not PostgresNIO (the worker, the gateway); swift-log-loki 2.0.0 omits it |
 | `postgres-migrations` | `1.2.0` | `PostgresMigrations` |
 | `postgres-nio` | `1.33.1` | `PostgresNIO`, `PostgresClient`, prepared statements, transactions |
 | `grpc-swift-2` | `2.4.0` | `GRPCCore`, `GRPCClient`, `GRPCServer` |
@@ -226,6 +227,32 @@ targets: [
             .product(name: "PostgresNIO", package: "postgres-nio"),
             .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
             .product(name: "Temporal", package: "swift-temporal-sdk"), // only with Temporal
+        ]
+    ),
+    // Only with Temporal: the worker is its own executable, so that it links only what it uses.
+    .executableTarget(
+        name: "<Service>Worker",
+        dependencies: [
+            "<Service>Core",
+            "<Service>GRPC",
+            "<Service>Workflows",
+            // plus the provider adapters its Activities use — and nothing Postgres
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            .product(name: "Configuration", package: "swift-configuration"),
+            .product(name: "GRPCCore", package: "grpc-swift-2"),
+            .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
+            .product(name: "Identity", package: "<project>-identity"),
+            .product(name: "IdentityGRPC", package: "<project>-identity"),
+            .product(name: "Logging", package: "swift-log"),
+            .product(name: "LoggingLoki", package: "swift-log-loki"),
+            // swift-log-loki 2.0.0 imports NIOFoundationCompat without declaring it. The service
+            // executable gets it transitively through PostgresNIO; this target links no Postgres,
+            // so without this line the static link fails on JSONEncoder.encodeAsByteBuffer.
+            .product(name: "NIOFoundationCompat", package: "swift-nio"),
+            .product(name: "ServiceIdentity", package: "<project>-identity"),
+            .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+            .product(name: "Temporal", package: "swift-temporal-sdk"),
+            .product(name: "<Service>Protos", package: "<project>-protos"),
         ]
     ),
 ],
