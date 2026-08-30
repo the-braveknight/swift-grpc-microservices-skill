@@ -130,4 +130,6 @@ Inject a `Logger` into every use case and log the domain event at the boundary: 
 
 The catch-all that maps to `.unknown` always logs, with the cause as `"error": "\(String(reflecting: error))"` beside the identifiers. It is the last place the original error is visible: after it, the caller sees an `internalError` status and nothing else. That is why a pure list or get use case takes a logger too — its only failure branch is the one that would otherwise vanish.
 
+The logger is the last initializer parameter, after every dependency and policy.
+
 This is the `swift-log` facade, which Core may link. The concrete handlers are bootstrapped only in the composition root ([composition.md](composition.md)), which passes its `logger` into each use case's initializer.

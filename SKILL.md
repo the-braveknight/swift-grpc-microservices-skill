@@ -64,7 +64,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 11. Keep the `Database` protocol in Core. Use `withConnection` for one repository operation and `withTransaction` only for a multi-operation atomic use case — except in a service that confines callers with row-level security, whose protocol declares `withTransaction` alone.
 12. Never hold a database transaction across a remote call. The sole exception is rotating a single-use secret, with an explicit deadline on the call well under the pool's wait time.
 13. Let the database stamp persistence-owned dates with `DEFAULT NOW()`. Do not inject a `now` closure or clock into a use case.
-14. Inject a `Logger` into every use case and log the domain event there: `info` on success, `warning` on a known refusal, `error` on a genuine failure, with searchable identifiers as metadata and never a secret or payload. The catch-all that maps to `.unknown` logs the cause with `String(reflecting:)` — it is the last place the original error is visible.
+14. Inject a `Logger` into every use case and log the domain event there: `info` on success, `warning` on a known refusal, `error` on a genuine failure, with searchable identifiers as metadata and never a secret or payload. The catch-all that maps to `.unknown` logs the cause with `String(reflecting:)` — it is the last place the original error is visible. The `Logger` is the last initializer parameter.
 
 ### Persistence
 

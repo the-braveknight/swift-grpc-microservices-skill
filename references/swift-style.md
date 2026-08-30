@@ -43,6 +43,7 @@ Order imports alphabetically by module name after any conditional Foundation blo
 - No trailing whitespace and no whitespace-only lines.
 - Keep lines readable, but do not mechanically wrap a generic `where` clause if the established code keeps the signature on one line.
 - Prefer explicit, descriptive local names: `database`, `postgresClient`, `itemService`, `serverConfig`.
+- `logger` is always the last parameter — of an initializer, and of any function that takes one — and the last stored dependency, at every call site in the same position.
 
 Use generic constraints in this form:
 
@@ -70,6 +71,7 @@ Do not use `T : Sendable` or move the constraint to a trailing `where` unless th
 - Use typed throws for Core use-case protocols and implementations.
 - Catch named enum cases directly: `catch ItemRepositoryError.duplicateName`.
 - End with a deliberate catch-all mapping when the public typed error includes `.unknown`, and log the cause there with `String(reflecting:)`.
+- Never declare a constant and assign it inside a following block — `let x: X` then `do { x = try … }`. Produce the value where it is declared: `guard let x = try? …` when every failure maps to one typed error, a private helper owning the do/catch when different failures map to different errors, or the value returned from the transaction closure.
 - Log through the `swift-log` facade only: domain events in use cases (see [core.md](core.md)), request and infrastructure events at transport and composition boundaries. Never construct a log handler outside the composition root.
 
 ## Formatting verification
