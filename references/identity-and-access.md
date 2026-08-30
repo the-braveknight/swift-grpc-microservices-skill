@@ -54,14 +54,14 @@ Never use a shared HMAC secret. A symmetric key makes every service that can ver
 ```swift
 public struct Identity: JWTPayload {
     public let subject: String
-    public let role: UserRole
+    public let role: Role
     public let issuer: IssuerClaim
     public let issuedAt: IssuedAtClaim
     public let expiration: ExpirationClaim
 
     init(
         subject: String,
-        role: UserRole,
+        role: Role,
         issuer: IssuerClaim,
         issuedAt: IssuedAtClaim,
         expiration: ExpirationClaim
@@ -80,7 +80,7 @@ public struct Identity: JWTPayload {
     }
 }
 
-public enum UserRole: String, Codable, Sendable {
+public enum Role: String, Codable, Sendable {
     case user
     case admin
     case service
@@ -110,7 +110,7 @@ public struct IdentitySigner: Sendable {
         public let privateKey: EdDSA.PrivateKey
     }
 
-    public func makeIdentity(subject: String, role: UserRole, expiration: TimeInterval) -> Identity
+    public func makeIdentity(subject: String, role: Role, expiration: TimeInterval) -> Identity
     public func signIdentity(_ identity: Identity) async throws -> String
 }
 ```
