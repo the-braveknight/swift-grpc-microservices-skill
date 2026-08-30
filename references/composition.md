@@ -187,7 +187,23 @@ extension HTTP2ClientTransport.Posix.TransportSecurity {
 }
 ```
 
-The reader is scoped to `tls`, so the operator sets `TLS_CERTIFICATE_PATH`, `TLS_PRIVATE_KEY_PATH` and `TLS_TRUST_ROOTS_PATH` — paths, like the signing key, because that is the form NIOSSL takes credentials in and it keeps a private key out of the environment. A missing one fails at startup naming the key. Every `GRPCClient`, the `TemporalClient` and the `TemporalWorker` take the client factory; the `GRPCServer` takes the server one. Do not share the file through the identity package: the shape is eight lines a service owns, and a shared package change costs a tag and a bump in every consumer.
+The reader is scoped to `tls`, so the operator sets `TLS_CERTIFICATE_PATH`, `TLS_PRIVATE_KEY_PATH` and `TLS_TRUST_ROOTS_PATH` — paths, like the signing key, because that is the form NIOSSL takes credentials in and it keeps a private key out of the environment. A missing one fails at startup naming the key. Every `GRPCClient`, and the `TemporalClient` and `TemporalWorker` when the Temporal server runs inside the stack, take the client factory; the `GRPCServer` takes the server one. When the Temporal server is Temporal Cloud, the client factory is wrong on both counts — its trust roots are the internal CA, and Cloud's frontend chains to a public one — so the Temporal client and worker take TLS with the system trust roots and authenticate with an API key instead:
+
+```swift
+let temporalClient = try TemporalClient(
+    target: .dns(host: temporalHost, port: 7233),        // <namespace>.<account>.tmprl.cloud
+    transportSecurity: .tls { tls in tls.trustRoots = .systemDefault },
+    configuration: .init(
+        instrumentation: .init(serverHostname: temporalHost),
+        namespace: temporalNamespace,
+        // the API key, from the `temporal` scope, as the SDK's authorization option or an
+        // interceptor adding `Authorization: Bearer` — verify which the pinned SDK exposes
+    ),
+    logger: logger
+)
+```
+
+Keep the two concerns in two scopes: `tls` is who the process is inside the stack, `temporal` is where the workflow engine is and how it is reached. A namespace on Temporal Cloud can also be configured for certificate authentication, which is mTLS again but against a CA registered with the namespace; prefer the API key, which rotates from the Cloud console and binds no vendor setting to the stack's CA. Do not share the file through the identity package: the shape is eight lines a service owns, and a shared package change costs a tag and a bump in every consumer.
 
 When the service uses Temporal, construct one long-lived `TemporalClient` in `serve`, inject a `<Feature>WorkflowClient` adapter into Core use cases, and include the client in `ServiceGroup`. Do not run workflow definitions or Activity implementations in the gRPC server process.
 

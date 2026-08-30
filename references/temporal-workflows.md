@@ -231,7 +231,7 @@ The worker composition root owns:
 - one `TemporalWorker` with explicit workflow definitions and Activity containers;
 - one `ServiceGroup` containing the worker and all its long-lived dependencies.
 
-Use the same Temporal namespace and task queue in the server's `TemporalClient`, its workflow-client adapter, and the worker. Manage the client and worker with graceful shutdown signals. Do not run a cancellation-aware reconciliation service beside the worker.
+Use the same Temporal namespace and task queue in the server's `TemporalClient`, its workflow-client adapter, and the worker, and the same transport security in both: the stack's mTLS client factory when the Temporal server runs in the stack, TLS with the system trust roots and an API key when it is Temporal Cloud (see *Serve composition root* in composition.md). Manage the client and worker with graceful shutdown signals. Do not run a cancellation-aware reconciliation service beside the worker.
 
 ## Naming and file style
 

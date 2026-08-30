@@ -254,6 +254,8 @@ name — the UI through `TEMPORAL_TLS_CA/CERT/KEY`, `TEMPORAL_TLS_SERVER_NAME` a
 `--tls-cert-path`, `--tls-key-path`, `--tls-ca-path` and `--tls-server-name` flags. The Swift
 `TemporalClient` and `TemporalWorker` take the same client factory as every `GRPCClient`.
 
+The certificate volume reaches only the stack. A service that uses Temporal Cloud instead of the `temporal` service above does not present its leaf to it and must not trust it with the internal CA: Cloud's frontend chains to a public CA, so the client and worker use TLS with the system trust roots and an API key (see composition.md), configured in the `temporal` scope beside the address and namespace. The `tls` variables stay exactly as they are — they still govern every gRPC connection between the stack's own processes.
+
 There is no plaintext mode and no mode variable. The images and the Compose file move together:
 an image that predates the factories against this file, or the reverse, breaks every call at
 once, because the Temporal frontend starts requiring client certificates the moment the file
