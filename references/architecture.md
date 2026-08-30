@@ -49,7 +49,7 @@ package struct PasswordPolicy: Equatable, Sendable {
 
 Name a rule expressed as numbers `XPolicy`, not `XConfiguration`. Configuration is deployment wiring that varies per environment; a policy is a product decision that would be identical in staging and production. The composition root reads configuration and translates it into policy — being loadable from `ConfigReader` does not make a value configuration. Name a duration `expiration`, matching the `expirationDate` it produces.
 
-Do not inject a concrete struct that has no protocol: injection buys substitution, and a concrete type cannot be substituted. Either the seam is real and the parameter is a protocol, or the type is constructed where it is used.
+Do not inject a concrete collaborator that has no protocol: injection buys substitution, and a concrete type cannot be substituted. Either the seam is real and the parameter is a protocol, or the type is constructed where it is used. A policy is the exception because it is data, not a collaborator: the composition root builds it from configuration and passes it by value into the use case's initializer, which defaults the parameter to `.standard` so a test constructs the use case without it. A validator that applies such a policy — `PasswordValidator(policy:)` — travels the same way; a validator with no values to carry is not a type at all but a guard in the use case.
 
 ## Duplicate the small shapes
 
