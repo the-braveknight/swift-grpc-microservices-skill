@@ -5,18 +5,21 @@
 - Command tree
 - Environment configuration
 - Serve composition root
+- Transport security factories
 - Temporal worker composition root
 - Migration composition root
+- Operator commands
 
 ## Command tree
 
 Name the executable target after the service, not `<Service>Server`. Make the root command default to serving and expose database migration as a nested subcommand:
 
 ```text
-catalog                 # defaults to serve
+catalog                          # defaults to serve
 catalog serve
-catalog worker          # only when the service uses Temporal
+catalog worker                   # only when the service uses Temporal
 catalog database migrate
+catalog service-credentials create --id <name>   # only on the authenticating service
 ```
 
 ```swift
@@ -37,55 +40,58 @@ struct Catalog: AsyncParsableCommand {
 
 Put commands in `<Service>/<Command>/`, except the small root `Database.swift` at `<Service>/Database/Database.swift` with `Migrate` nested below it.
 
-Register `Worker.self` as a root subcommand when the package uses Temporal. Keep `serve` as the default subcommand.
-
 ## Environment configuration
 
-Create `PostgresClient.Configuration+ConfigReader.swift` in the executable's `Configuration` folder:
+Start with `ConfigReader(provider: EnvironmentVariablesProvider())`, then scope by concern. Swift Configuration transforms camel-case scoped keys into variables:
+
+```dotenv
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=catalog_service
+POSTGRES_PASSWORD=…
+POSTGRES_DB=catalog
+GRPC_SERVER_HOST=0.0.0.0
+GRPC_SERVER_PORT=50051
+GRPC_ACCOUNTS_HOST=accounts          # one scope per upstream, required
+GRPC_ACCOUNTS_PORT=50051
+TLS_CERTIFICATE_PATH=/run/tls/cert.pem
+TLS_PRIVATE_KEY_PATH=/run/tls/key.pem
+TLS_TRUST_ROOTS_PATH=/run/tls/ca.pem
+JWT_PUBLIC_KEY_PATH=/run/secrets/jwt-public
+TEMPORAL_HOST=temporal
+TEMPORAL_PORT=7233
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TASK_QUEUE=catalog
+LOKI_URL=http://loki:3100
+LOG_LEVEL=info
+```
+
+Give each configuration an `init(config:)` extension in the executable's `Configuration` folder — `PostgresClient.Configuration+ConfigReader.swift`, `TransportSecurity+ConfigReader.swift`, `IdentityVerifier.Configuration+ConfigReader.swift`, and so on. A small extension duplicated per service, not a shared package.
 
 ```swift
 extension PostgresClient.Configuration {
     init(config: ConfigReader) throws {
-        let host = try config.requiredString(forKey: "host")
-        let port = try config.requiredInt(forKey: "port")
-        let username = try config.requiredString(forKey: "user")
-        let password = try config.requiredString(forKey: "password", isSecret: true)
-        let database = try config.requiredString(forKey: "db")
-
         self.init(
-            host: host,
-            port: port,
-            username: username,
-            password: password,
-            database: database,
+            host: try config.requiredString(forKey: "host"),
+            port: try config.requiredInt(forKey: "port"),
+            username: try config.requiredString(forKey: "user"),
+            password: try config.requiredString(forKey: "password", isSecret: true),
+            database: try config.requiredString(forKey: "db"),
             tls: .prefer(.clientDefault)
         )
     }
 }
 ```
 
-Start with `ConfigReader(provider: EnvironmentVariablesProvider())`, then scope to `postgres` or `grpc.server`. Swift Configuration transforms camel-case scoped keys into variables such as:
+Require infrastructure values and secrets. Defaults are acceptable for the listen address, listen port, and log level. Require an upstream's host and port rather than defaulting them: a process that quietly dials `localhost` in a container reports a misconfiguration as a connection failure minutes later, at the first request, instead of at startup.
 
-```dotenv
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_USER=catalog
-POSTGRES_PASSWORD=catalog
-POSTGRES_DB=catalog
-GRPC_SERVER_HOST=0.0.0.0
-GRPC_SERVER_PORT=50051
-TEMPORAL_HOST=localhost
-TEMPORAL_PORT=7233
-TEMPORAL_NAMESPACE=default
-TEMPORAL_TASK_QUEUE=catalog
-LOG_LEVEL=info
-```
+Key material — signing keys, certificates, service credentials — is configured as a path and the file is opened here, in the composition root, never in a library. A path is the form NIOSSL and grpc-swift already take credentials in, it keeps a private key out of the environment, and it fails at startup naming the path. The rationale is in [identity-and-access.md](identity-and-access.md), *Key material in configuration*.
 
-Require infrastructure values and secrets. Defaults are acceptable for the listen address, listen port, and log level. Where the values come from in a running environment is [environment.md](environment.md)'s subject.
+Where the values come from in a running environment is [environment.md](environment.md)'s subject.
 
 ## Serve composition root
 
-Use these section comments and this order:
+Use these section comments in this order:
 
 ```swift
 func run() async throws {
@@ -98,7 +104,7 @@ func run() async throws {
 }
 ```
 
-Under Logging, bootstrap the logging system **inline** — never hide it behind a shared helper or module. Build one `LokiLogProcessor`, then `LoggingSystem.bootstrap` a `MultiplexLogHandler` of `StreamLogHandler.standardOutput` and a `LokiLogHandler`, so every line reaches both the container's stdout and Loki. Pass the service name to the Loki handler's `service:` so its lines carry a `service` label. Each service keeps its own `LokiLogProcessorConfiguration+ConfigReader.swift` beside its other configuration extensions (`config.scoped(to: "loki")`, `LOKI_URL`, defaulting to `http://localhost:3100`) — a small extension duplicated per service, not a shared observability package. Do not extract a shared logging module; the duplication is cheaper than the coupling.
+**Logging.** Bootstrap the logging system inline — never behind a shared helper or module. Build one in-process log shipper, then `LoggingSystem.bootstrap` a `MultiplexLogHandler` of `StreamLogHandler.standardOutput` and the shipper's handler, so every line reaches both the container's stdout and the aggregator. Pass the service name as the handler's service label. The default aggregator is Grafana Loki through `swift-log-loki`; substituting another in-process shipper changes only this block.
 
 ```swift
 // MARK: - Logging
@@ -117,42 +123,52 @@ LoggingSystem.bootstrap { label in
 let logger = Logger(label: "catalog")
 ```
 
-Under Infrastructure, construct one `PostgresClient` and scope the transport-security reader:
+**Infrastructure.** Construct one `PostgresClient`, the identity verifier, one `GRPCClient` per upstream, and — with Temporal — one `TemporalClient`. Scope the transport-security reader once:
 
 ```swift
 let tlsConfig = config.scoped(to: "tls")
 ```
 
-Under Composition, construct `PostgresDatabase<Postgres<Service>Context>`, use cases, and gRPC service implementations. Under gRPC, construct one server:
+**Composition.** Construct `PostgresDatabase<Postgres<Service>Context>`, policies, use cases (passing `logger`), workflow-client adapters, and gRPC service implementations.
+
+**gRPC.** Construct one server, with the identifying interceptor applied to everything except the session-issuing RPCs:
 
 ```swift
 let serverConfig = config.scoped(to: "grpc.server")
-let host = serverConfig.string(forKey: "host", default: "0.0.0.0")
-let port = serverConfig.int(forKey: "port", default: 50051)
 let server = GRPCServer(
     transport: .http2NIOPosix(
-        address: .ipv4(host: host, port: port),
+        address: .ipv4(
+            host: serverConfig.string(forKey: "host", default: "0.0.0.0"),
+            port: serverConfig.int(forKey: "port", default: 50051)
+        ),
         transportSecurity: try .mTLS(config: tlsConfig)
     ),
-    services: [itemService]
+    services: [itemService],
+    interceptorPipeline: [
+        .apply(
+            IdentityServerInterceptor(verifier: identityVerifier),
+            to: .allExcluding(services: [], methods: ItemService.publicMethods)
+        )
+    ]
 )
 ```
 
-Own all long-lived services with ServiceLifecycle:
+**Lifecycle.** Own every long-lived thing with ServiceLifecycle:
 
 ```swift
 let serviceGroup = ServiceGroup(
-    services: [
-        lokiProcessor,
-        postgresClient,
-        server
-    ],
+    services: [lokiProcessor, postgresClient, accountsClient, server],
     gracefulShutdownSignals: [.sigint, .sigterm],
     logger: logger
 )
+try await serviceGroup.run()
 ```
 
-Every connection is mutually authenticated, in both directions, with the one leaf certificate the process was issued (see *Transport security* in environment.md). The factories live in the executable's `Configuration` folder as `TransportSecurity+ConfigReader.swift`, one per direction, on grpc-swift's own types — so a call site reads exactly like the library's `.plaintext` did, and there is no struct to carry two values and no mode to switch:
+When the service uses Temporal, construct one long-lived `TemporalClient` in `serve`, inject a `<Feature>WorkflowClient` adapter into Core use cases, and include the client in `ServiceGroup`. Do not run workflow definitions or Activity implementations in the gRPC server process.
+
+## Transport security factories
+
+Every connection is mutually authenticated, in both directions, with the one leaf certificate the process was issued (see *Transport security* in [environment.md](environment.md)). The factories live in the executable's `Configuration` folder as `TransportSecurity+ConfigReader.swift`, one per direction, on grpc-swift's own types — so a call site reads exactly like the library's `.plaintext` did, and there is no struct to carry two values and no mode to switch:
 
 ```swift
 extension HTTP2ServerTransport.Posix.TransportSecurity {
@@ -187,31 +203,30 @@ extension HTTP2ClientTransport.Posix.TransportSecurity {
 }
 ```
 
-The reader is scoped to `tls`, so the operator sets `TLS_CERTIFICATE_PATH`, `TLS_PRIVATE_KEY_PATH` and `TLS_TRUST_ROOTS_PATH` — paths, like the signing key, because that is the form NIOSSL takes credentials in and it keeps a private key out of the environment. A missing one fails at startup naming the key. Every `GRPCClient`, and the `TemporalClient` and `TemporalWorker` when the Temporal server runs inside the stack, take the client factory; the `GRPCServer` takes the server one. When the Temporal server is Temporal Cloud, the client factory is wrong on both counts — its trust roots are the internal CA, and Cloud's frontend chains to a public one — so the Temporal client and worker take TLS with the system trust roots and authenticate with an API key instead:
+The reader is scoped to `tls`, so the operator sets `TLS_CERTIFICATE_PATH`, `TLS_PRIVATE_KEY_PATH`, and `TLS_TRUST_ROOTS_PATH`. A missing one fails at startup naming the key. Every `GRPCClient`, and the `TemporalClient` and `TemporalWorker` when the Temporal server runs inside the stack, take the client factory; the `GRPCServer` takes the server one. Do not share the file through the identity package: the shape is eight lines a service owns.
+
+**A managed workflow engine or any external endpoint is outside the stack.** The client factory is wrong on both counts for it — its trust roots are the internal CA, and the external frontend chains to a public one. Such a client uses TLS with the system trust roots and the provider's own credential, configured in that provider's scope beside its address:
 
 ```swift
 let temporalClient = try TemporalClient(
-    target: .dns(host: temporalHost, port: 7233),        // <namespace>.<account>.tmprl.cloud
+    target: .dns(host: temporalHost, port: 7233),        // the provider's endpoint
     transportSecurity: .tls { tls in tls.trustRoots = .systemDefault },
     configuration: .init(
         instrumentation: .init(serverHostname: temporalHost),
         namespace: temporalNamespace,
-        // the API key, from the `temporal` scope, as the SDK's authorization option or an
-        // interceptor adding `Authorization: Bearer` — verify which the pinned SDK exposes
+        // the API key, from the `temporal` scope, through whichever option the pinned SDK exposes
     ),
     logger: logger
 )
 ```
 
-Keep the two concerns in two scopes: `tls` is who the process is inside the stack, `temporal` is where the workflow engine is and how it is reached. A namespace on Temporal Cloud can also be configured for certificate authentication, which is mTLS again but against a CA registered with the namespace; prefer the API key, which rotates from the Cloud console and binds no vendor setting to the stack's CA. Do not share the file through the identity package: the shape is eight lines a service owns, and a shared package change costs a tag and a bump in every consumer.
-
-When the service uses Temporal, construct one long-lived `TemporalClient` in `serve`, inject a `<Feature>WorkflowClient` adapter into Core use cases, and include the client in `ServiceGroup`. Do not run workflow definitions or Activity implementations in the gRPC server process.
+Keep the two concerns in two scopes: `tls` is who the process is inside the stack; `temporal` is where the workflow engine is and how it is reached. Prefer an API key over registering a CA with the provider: it rotates from the provider's console and binds no vendor setting to the stack's CA.
 
 ## Temporal worker composition root
 
-Run Temporal execution from the executable's `Worker.self` subcommand. Follow the same Configuration, Logging, Infrastructure, Composition, and Lifecycle section order as `serve`.
+Run Temporal execution from the executable's `Worker.self` subcommand, registered beside `Serve.self` and `Database.self`. Follow the same section order as `serve`.
 
-Construct the databases and remote clients required by Activities once, compose the Core Activity service, then create one `TemporalWorker`:
+The worker owns no database (see *Worker composition* in [temporal-workflows.md](temporal-workflows.md)). Under Infrastructure, construct the long-lived gRPC and provider clients its Activities call. Under Composition, build the concrete Core Activity service over those clients. Then create one `TemporalWorker`:
 
 ```swift
 let temporalWorker = try TemporalWorker(
@@ -231,9 +246,9 @@ let temporalWorker = try TemporalWorker(
 )
 ```
 
-Add the worker and every long-lived dependency used by Activities to one `ServiceGroup`. Do not add a five-second registration scanner or another periodic database-to-Temporal reconciliation service. Temporal owns durable workflow execution.
+Add the worker and every long-lived dependency used by Activities to one `ServiceGroup`. Do not add a periodic database-to-Temporal reconciliation service. Temporal owns durable workflow execution.
 
-A worker has no inbound request to forward, so it speaks as itself (see *Presenting a process's own identity* in identity-and-access.md). Under Infrastructure, construct a client to the issuer with no interceptor — the exchange authenticates by the secret in the request — and a `ServiceIdentitySession` over `ServiceIdentity`'s `IssueServiceToken` adapter; put `ServiceIdentityInterceptor(session:)` on every client the worker calls as itself. Under Lifecycle, race one exchange against the group so a wrong secret or an unreachable issuer fails the worker at startup naming the problem:
+A worker has no inbound request to forward, so it speaks as itself (see *Presenting a process's own identity* in [identity-and-access.md](identity-and-access.md)). Under Infrastructure, construct a client to the issuer with no interceptor — the exchange authenticates by the secret in the request — and a `ServiceIdentitySession` over the `ServiceIdentity` product's `IssueServiceToken` adapter; put `ServiceIdentityInterceptor(session:)` on every client the worker calls as itself. Under Lifecycle, race one exchange against the group so a wrong secret or an unreachable issuer fails the worker at startup naming the problem:
 
 ```swift
 try await withThrowingTaskGroup { group in
@@ -246,11 +261,11 @@ try await withThrowingTaskGroup { group in
 }
 ```
 
-`GRPCClient` tolerates an RPC that races its `run()`, so the exchange may start before the group has fully started its clients. Read the credential through a `ServiceIdentityCredentials+ConfigReader.swift` beside the other configuration extensions: `SERVICE_CREDENTIAL_ID` and `SERVICE_CREDENTIAL_SECRET_PATH`, the file's trailing newline trimmed.
+`GRPCClient` tolerates an RPC that races its `run()`, so the exchange may start before the group has fully started its clients. Read the credential through `ServiceIdentityCredentials+ConfigReader.swift`: `SERVICE_CREDENTIAL_ID` and `SERVICE_CREDENTIAL_SECRET_PATH`, the file's trailing newline trimmed. The same shape applies to any process that calls as itself — a webhook-handling `serve`, a scheduled job.
 
 ## Migration composition root
 
-The migration command uses the same configuration extension. It is short-lived and owns no `ServiceGroup`, so it does not ship to Loki — bootstrap `StreamLogHandler.standardOutput` alone. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
+The migration command uses the same Postgres configuration extension. It is short-lived and owns no `ServiceGroup`, so it does not ship logs — bootstrap `StreamLogHandler.standardOutput` alone. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
 
 ```swift
 try await withThrowingTaskGroup { group in
@@ -259,6 +274,7 @@ try await withThrowingTaskGroup { group in
     }
 
     let migrations = DatabaseMigrations()
+    await migrations.add(CreateServiceRole(role: serviceRole, password: servicePassword, database: database))
     await migrations.add(CreateItemsTable())
 
     try await migrations.apply(client: client, logger: logger, dryRun: false)
@@ -266,6 +282,8 @@ try await withThrowingTaskGroup { group in
 }
 ```
 
-The migration command also reads `POSTGRES_SERVICE_ROLE` (a default of `<service>_service` is fine) and `POSTGRES_SERVICE_PASSWORD` (required) and registers `CreateServiceRole` first. Every other command connects as that role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the service role's, not the owner's the migration used.
+The migration command connects as the owner and also reads `POSTGRES_SERVICE_ROLE` (a default of `<service>_service` is fine) and `POSTGRES_SERVICE_PASSWORD` (required) for `CreateServiceRole`. Every other command connects as the service role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the service role's, not the owner's.
 
-How a running environment supplies these values — images, secrets, ports, orchestration — is in [environment.md](environment.md) and nowhere else.
+## Operator commands
+
+An operation that must never be reachable over the network — issuing a service credential, rotating a key — is a subcommand, run by an operator against the service's own database. It follows the migration root's shape: short-lived, stdout logging, a task group around the client. Print exactly the value the operator needs on standard output and nothing else there, so a redirect captures it. See *Service credentials and issuance* in [identity-and-access.md](identity-and-access.md).

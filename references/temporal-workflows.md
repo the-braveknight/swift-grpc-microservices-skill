@@ -42,8 +42,6 @@ Core must not import Temporal. The Workflows target must not implement SQL, cons
 
 Use Workflow code only for deterministic orchestration. Call `WorkflowContext` for workflow time, timers, conditions, Activities, signals, and queries. Do not perform database, gRPC, HTTP, email, filesystem, environment, UUID generation, ordinary `Date()` reads, or other nondeterministic side effects directly in a Workflow.
 
-Use this shape:
-
 ```swift
 @Workflow
 package struct ReservationWorkflow {
@@ -73,9 +71,9 @@ Set terminal workflow state only after the corresponding Activity succeeds. Let 
 
 ## Activity design and retries
 
-Put every external side effect in an Activity: database work, remote service calls, email delivery, and provider operations. Give each Activity one side effect. Minting a secret and delivering it are two: issue the challenge in one Activity, send it in the next, so a failing delivery retries against the same stored digest instead of rotating the value the recipient already holds. Deleting a secret is a third, run before terminal state is assigned.
+Put every external side effect in an Activity: database work through the owning service, remote service calls, email delivery, provider operations. Give each Activity one side effect. Minting a secret and delivering it are two: issue the challenge in one Activity, send it in the next, so a failing delivery retries against the same stored digest instead of rotating the value the recipient already holds. Deleting a secret is a third, run before terminal state is assigned.
 
-Give an activity a distinct registration name whenever two `@ActivityContainer`s on one worker would otherwise share it. The Temporal activity name defaults to the method name, and every container registered on a worker shares one activity-name space — so a `recordPurchase` in two containers registers the same name twice and one silently overrides the other, running the wrong implementation with no error. The Swift `Activities.<Method>` type is still keyed by the Swift method, so only the registration name collides: set `@Activity(name: "RecordLicensePurchase")` on one (or both) and leave the workflow call sites unchanged. Watch the worker log for `Duplicate activity registration` — it is the symptom.
+Give an Activity a distinct registration name whenever two `@ActivityContainer`s on one worker would otherwise share it. The Temporal activity name defaults to the method name, and every container registered on a worker shares one activity-name space — so a `recordPurchase` in two containers registers the same name twice and one silently overrides the other, running the wrong implementation with no error. The Swift `Activities.<Method>` type is still keyed by the Swift method, so only the registration name collides: set `@Activity(name: "RecordItemPurchase")` on one and leave the workflow call sites unchanged. Watch the worker log for `Duplicate activity registration` — it is the symptom.
 
 Group feature Activities in one `@ActivityContainer` and inject one narrow Core service protocol:
 
@@ -99,15 +97,15 @@ package struct ReservationActivities {
 }
 ```
 
-Nest Activity input values under the container and use `Id`, not `ID`, in Swift property and parameter names; strict camel case keeps `registrationId` aligned with SQL `registration_id` and proto `registration_id` without acronym special-casing. Use `creationDate`, `expirationDate`, and similar noun-based date names; do not use `createdAt`, `expiresAt`, `expiryDate`, or other `somethingAt` names.
+Nest Activity input values under the container. Use `Id`, not `ID`, and noun-based date names, as everywhere else.
 
-Assume every Activity can be retried after its side effect succeeds but before Temporal receives the result. Make each write retry-safe at the system that owns the side effect: use unique constraints for creates, compare-and-swap updates for transitions, and provider idempotency keys for email, payments, or messaging. Do not rely on Workflow fields, Activity memory, or Temporal history as the downstream idempotency mechanism.
+Assume every Activity can be retried after its side effect succeeds but before Temporal receives the result. Make each write retry-safe at the system that owns the side effect: unique constraints for creates, compare-and-swap updates for transitions, provider idempotency keys for email, payments, or messaging. Do not rely on Workflow fields, Activity memory, or Temporal history as the downstream idempotency mechanism.
 
-Derive a stable, namespaced idempotency key from immutable Workflow input or a caller-owned pending-record identifier, such as `authentication-registration-<registrationId>`. Reuse the exact key on every Activity attempt; never generate a UUID inside Workflow code or per Activity retry. Pass the key through the Core Activity service port and remote mutation contract.
+Derive a stable, namespaced idempotency key from immutable Workflow input or a caller-owned pending-record identifier, such as `<service>-<process>-<recordId>`. Reuse the exact key on every Activity attempt; never generate a UUID inside Workflow code or per Activity retry. Pass the key through the Core Activity service port and the remote mutation contract.
 
-The receiving service must atomically guarantee that the same key and canonical input returns the original result, including its database-generated entity ID, while the same key with different input produces a permanent idempotency conflict. Map that conflict to a non-retryable Activity failure. Do not treat an idempotency key as authentication or proof that a preceding workflow step occurred.
+The receiving service must atomically guarantee that the same key and canonical input returns the original result, including its database-generated entity id, while the same key with different input produces a permanent idempotency conflict. Map that conflict to a non-retryable Activity failure. Do not treat an idempotency key as authentication or proof that a preceding workflow step occurred.
 
-Do not generate or preallocate an entity identifier owned by another service. Pass the caller-owned workflow or pending-record identifier through the Workflow, let the owning service return its database-generated identifier during Activity execution, then persist that returned foreign identifier through retry-safe local Activity work. Require an owner-supported idempotency key for a remotely retried create. Do not convert `ALREADY_EXISTS` into success by looking up a business key such as email; distinct logical operations can carry identical business data.
+Do not generate or preallocate an entity identifier owned by another service. Pass the caller-owned workflow or pending-record identifier through the Workflow, let the owning service return its database-generated identifier during Activity execution, then persist that returned foreign identifier through retry-safe Activity work. Do not convert `ALREADY_EXISTS` into success by looking up a business key such as email; distinct logical operations can carry identical business data.
 
 Configure explicit Activity timeouts and retries. Leave dependency outages retryable. Translate invalid state, conflicting canonical data, and permanent consistency failures to non-retryable `ApplicationError` values at the Activity boundary. Do not catch `ActivityError` in Workflow code merely to inspect `ApplicationError.type` strings; model the operation so permanent failures can fail the Workflow cleanly.
 
@@ -146,11 +144,11 @@ WorkflowOptions(
 
 These two policies already express the intent: a running Workflow returns the existing handle without error, and only a closed one rejects the start. Do not add a `catch is WorkflowAlreadyStartedError` on top — with a deterministic ID derived from a freshly created record it is unreachable, and where it can fire it reports success for a Workflow that will never run again.
 
-Do not flatten every Temporal failure into a single `unavailable` case. Let the SDK error propagate from the adapter and classify it where the distinction is actionable; a one-case enum erases the cause without adding a distinction.
+Do not flatten every Temporal failure into a single `unavailable` case. Let the SDK error propagate from the adapter and classify it where the distinction is actionable.
 
 ## Transactions and durability
 
-Never call Temporal while a PostgreSQL transaction is open. Complete the local atomic write first, then start or signal the Workflow for low latency:
+Never call Temporal while a PostgreSQL transaction is open. Complete the local atomic write first, then start or signal the Workflow:
 
 ```swift
 let reservation = try await database.withTransaction { context in
@@ -220,22 +218,21 @@ This preserves cancellation: if the parent Workflow was cancelled rather than me
 
 Register `Worker.self` beside `Serve.self` and `Database.self` in the executable command tree. Run `TemporalWorker` from the `worker` subcommand, not from the gRPC `serve` command.
 
-The worker owns no database. An Activity resolves and records through the services that own the data, over gRPC, authenticated as a service (identity-and-access.md, rules 37–38) — the same clients it uses to call any other service. This keeps a service's rows reached one way, through its contract and its server interceptor, whether the caller is a request or this worker; a worker with its own `PostgresClient` reintroduces a second path into that data and, where the tables carry row-level security, a second identity-stamping mechanism beside the interceptor's (persistence.md). Give the owning service the operations the worker needs, gated to `service`/`admin`, rather than a connection to the worker. Put those operations in their own gRPC service alongside the user-facing one — `ReconciliationService` beside `BillingService`, `RegistrationService` beside `AuthenticationService` — rather than mixing worker-facing RPCs into the surface end users call; the two audiences then have distinct, separately-gated contracts served by the one `serve` process.
+**The worker owns no database.** An Activity resolves and records through the services that own the data, over gRPC, authenticated as a `service` (see *Processes: the service role* in [identity-and-access.md](identity-and-access.md)) — the same clients it uses to call any other service. This keeps a service's rows reached one way, through its contract and its server interceptor, whether the caller is a request or this worker; a worker with its own `PostgresClient` reintroduces a second path into that data and, where the tables carry row-level security, a second identity-stamping mechanism beside the interceptor's ([persistence.md](persistence.md)). Give the owning service the operations the worker needs, gated to `service`/`admin`, rather than a connection to the worker. Put those operations in their own gRPC service beside the user-facing one — `ItemReconciliationService` beside `ItemService` — so the two audiences have distinct, separately gated contracts served by the one `serve` process.
 
 The worker composition root owns:
 
 - configuration and logging;
-- long-lived service clients its Activities call (each with the service-identity interceptor); a Postgres client only if the worker genuinely owns data no service fronts — normally it does not;
-- long-lived gRPC/provider clients used by Activities;
+- the service-identity session and the issuer client it exchanges through;
+- long-lived gRPC clients its Activities call, each carrying the service-identity interceptor;
+- long-lived provider clients used by Activities;
 - the concrete Core Activity service;
 - one `TemporalWorker` with explicit workflow definitions and Activity containers;
 - one `ServiceGroup` containing the worker and all its long-lived dependencies.
 
-Use the same Temporal namespace and task queue in the server's `TemporalClient`, its workflow-client adapter, and the worker, and the same transport security in both: the stack's mTLS client factory when the Temporal server runs in the stack, TLS with the system trust roots and an API key when it is Temporal Cloud (see *Serve composition root* in composition.md). Manage the client and worker with graceful shutdown signals. Do not run a cancellation-aware reconciliation service beside the worker.
+Use the same Temporal namespace and task queue in the server's `TemporalClient`, its workflow-client adapter, and the worker, and the same transport security in both: the stack's mTLS client factory when the Temporal server runs in the stack, TLS with the system trust roots and an API key when it is a managed engine (see *Transport security factories* in [composition.md](composition.md)). Manage the client and worker with graceful shutdown signals. Do not run a cancellation-aware reconciliation service beside the worker.
 
 ## Naming and file style
-
-Use this feature-local layout:
 
 ```text
 Sources/<Service>Workflows/<Feature>/
@@ -244,4 +241,4 @@ Sources/<Service>Workflows/<Feature>/
   Temporal<Feature>WorkflowClient.swift
 ```
 
-Use `package` access across targets, `private` mutable Workflow fields, nested `Input` values, and nested Activity input values. Preserve the repository's conditional Foundation imports and import ordering. Name identifiers `xId`, Workflow types `XWorkflow`, Activity containers `XActivities`, Core adapters `XWorkflowClient`, and Temporal implementations `TemporalXWorkflowClient`.
+Use `package` access across targets, `private` mutable Workflow fields, nested `Input` values, and nested Activity input values. Preserve the conditional Foundation imports and import ordering. Name identifiers `xId`, Workflow types `XWorkflow`, Activity containers `XActivities`, Core ports `XWorkflowClient`, and Temporal implementations `TemporalXWorkflowClient`.

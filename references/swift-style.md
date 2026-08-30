@@ -4,7 +4,7 @@ Match existing files before applying these defaults. Preserve user-authored form
 
 ## File form
 
-Keep the Xcode-style header used by the repository:
+Keep an Xcode-style header:
 
 ```swift
 //
@@ -15,7 +15,7 @@ Keep the Xcode-style header used by the repository:
 //
 ```
 
-Use the current date and repository author convention for new files when known. Do not rewrite historical headers.
+Use the current date and the repository's author convention for new files when known. Do not rewrite historical headers.
 
 Use conditional Foundation imports in production files that need Foundation values:
 
@@ -32,13 +32,13 @@ Order imports alphabetically by module name after any conditional Foundation blo
 ## Layout
 
 - Indent with four spaces; never tabs in Swift.
-- Put one declaration per file, except tiny, tightly related conversion extensions.
-- Use trailing commas in multiline arrays and manifest dependency lists where the surrounding manifest does.
+- One declaration per file, except tiny, tightly related conversion extensions.
+- Trailing commas in multiline arrays and manifest dependency lists where the surrounding file does.
 - Break multiline initializers one argument per line.
-- Place the opening brace on the declaration line.
+- Opening brace on the declaration line.
 - Keep a type declaration and its qualified protocol conformances on one line; do not split the protocol name or put the opening brace on a separate line.
-- Use a single blank line between logical blocks and declarations.
-- Avoid trailing whitespace and whitespace-only lines.
+- A single blank line between logical blocks and declarations.
+- No trailing whitespace and no whitespace-only lines.
 - Keep lines readable, but do not mechanically wrap a generic `where` clause if the established code keeps the signature on one line.
 - Prefer explicit, descriptive local names: `database`, `postgresClient`, `itemService`, `serverConfig`.
 
@@ -50,26 +50,25 @@ func withConnection<T: Sendable>(
 ) async throws -> T
 ```
 
-Do not use `T : Sendable` or move the constraint to a trailing `where` unless required by the compiler.
+Do not use `T : Sendable` or move the constraint to a trailing `where` unless the compiler requires it.
 
 ## Access and concurrency
 
-- Use `package` for declarations shared across targets in one service package.
-- Use `private` for stored dependencies and implementation details.
-- Use `public` only for packages consumed externally or established monolith module APIs.
+- `package` for declarations shared across targets in one package.
+- `private` for stored dependencies and implementation details.
+- `public` only for packages consumed externally or an existing consumer's established API.
 - Make protocols and values crossing concurrency boundaries `Sendable`.
-- Use actors for mutable in-memory repositories.
+- Use actors for mutable in-memory state such as an in-memory repository or a token session.
 - Mark database operation closures `@Sendable`.
 - Prefer immutable `let` properties.
 
 ## APIs and errors
 
-- Use `callAsFunction` for use cases.
-- Keep the input label when established: `useCase(input: input)` in the extracted service.
+- Use `callAsFunction` for use cases, with the `input:` label: `useCase(input: input)`.
 - Use typed throws for Core use-case protocols and implementations.
-- Catch named enum cases directly: `catch ItemRepositoryError.duplicateIdentifier`.
+- Catch named enum cases directly: `catch ItemRepositoryError.duplicateName`.
 - End with a deliberate catch-all mapping when the public typed error includes `.unknown`.
-- Do not log in Core use cases unless logging is itself an explicit application port; log at executable, transport, or infrastructure boundaries.
+- Log through the `swift-log` facade only: domain events in use cases (see [core.md](core.md)), request and infrastructure events at transport and composition boundaries. Never construct a log handler outside the composition root.
 
 ## Formatting verification
 
@@ -86,9 +85,8 @@ Use this `.swift-format` baseline when the repository does not already provide o
 }
 ```
 
-`indentConditionalCompilationBlocks` must remain `false` so conditional
-`FoundationEssentials` and `Foundation` imports stay flush-left.
+`indentConditionalCompilationBlocks` must remain `false` so conditional `FoundationEssentials` and `Foundation` imports stay flush-left.
 
 `lineLength` is deliberately `400`: the formatter must never mechanically wrap a line, so declarations break only where the author chooses. Do not lower it to a conventional 100/120 limit.
 
-Use the repository's formatter if it has configuration or a formatting command. Otherwise, inspect changed Swift files and use `swift format lint --strict` only if the installed Swift toolchain and existing project support it. Do not introduce a new formatting tool or reformat unrelated files during extraction.
+Use the repository's formatter if it has configuration or a formatting command. Otherwise, inspect changed Swift files and use `swift format lint --strict` only if the installed toolchain and existing project support it. Do not introduce a new formatting tool or reformat unrelated files.

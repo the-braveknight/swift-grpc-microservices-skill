@@ -4,12 +4,16 @@ Use this runbook for one bounded context and repeat it for an entire monolith. W
 
 ## Contents
 
-- Establish the baseline and choose extraction order
-- Define and release the contract
-- Build the producer and adapt the consumer
-- Wire deployment, move data, and cut over
-- Retire the old slice and verify
-- Progress through the whole monolith
+1. Establish the baseline
+2. Choose extraction order
+3. Define and release the contract
+4. Build the producer package
+5. Adapt the monolith consumer
+6. Wire deployment
+7. Move data and cut over
+8. Retire the old slice
+9. Verification matrix
+10. Whole-monolith progression
 
 ## 1. Establish the baseline
 
@@ -45,7 +49,7 @@ Do not extract two contexts into one service solely because their tables current
 1. Add `<Service>Protos` to the shared `<project>-protos` package.
 2. Put files under `Sources/<Service>Protos/<organization>/<service>/v1/`.
 3. Define messages around service capabilities, not database tables. Use RPC names matching business operations.
-4. Include only fields consumers need. Model stable identifiers explicitly.
+4. Include only fields consumers need. Model stable identifiers explicitly; omit owned identifiers from create requests.
 5. Generate public clients, servers, and messages.
 6. Build the proto package, review generated symbol names, commit, tag, and publish a semantic version.
 
@@ -55,16 +59,18 @@ Prefer additive evolution. Reserve removed fields and names. Do not modify a rel
 
 1. Run `swift package init --type executable` in the new repository.
 2. Reshape targets to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`.
-3. Copy the selected entities, repository ports/errors/commands, use-case contracts, and behavior into feature-first Core folders.
-4. Remove monolith framework imports from Core. Preserve behavior and naming; do not introduce new value objects or clock abstractions during extraction.
+3. Copy the selected entities, repository ports/errors/commands, use-case contracts, and behavior into feature-first Core folders. Preserve behavior and naming, including the `useCase(input:)` call form; do not introduce new value objects or clock abstractions during extraction.
+4. Remove monolith framework imports from Core. Remove every manifest dependency the extracted slice does not import.
 5. Reintroduce the Core `Database` protocol and use-case context protocols.
-6. Copy and adapt Postgres repositories, statements, and migrations. Remove the old service schema because the new service owns the database. Let persistence stamp creation dates.
-7. Add gRPC services and colocated `+Protobuf` mappings.
+6. Copy and adapt Postgres repositories, statements, and migrations. Remove the old schema qualifier because the new service owns the database. Let the database stamp creation dates and generate identifiers. Make `CreateServiceRole` the first migration.
+7. Add gRPC services and colocated `+Protobuf` conversions, with per-RPC identity checks.
 8. Add `serve` and `database migrate` composition roots.
 9. Add the service's environment pieces per [environment.md](environment.md).
 10. Build the entire producer.
 
-When copying as-is conflicts with a settled convention, make only the boundary-required adjustment. Examples: convert `public` to `package`, change a schema-qualified table to an unqualified table, or replace an old shared monolith database wrapper with the Core `Database` protocol.
+When copying as-is conflicts with a settled convention, make only the boundary-required adjustment: convert `public` to `package`, change a schema-qualified table to an unqualified table, replace an old shared monolith database wrapper with the Core `Database` protocol. A monolith module that exposes `public` API to other modules keeps it until the consumer is adapted.
+
+Do not delete the monolith's table or migration during the copy phase. Complete producer and consumer verification, decide how existing data moves, execute the cutover, and only then remove old persistence.
 
 ## 5. Adapt the monolith consumer
 
@@ -73,21 +79,19 @@ When copying as-is conflicts with a settled convention, make only the boundary-r
 3. Keep the existing API-facing `XUseCaseProtocol`, input, error, and entity so callers do not absorb transport types.
 4. Replace the concrete local use-case implementation with one that wraps the generated gRPC client.
 5. Map local input to requests, responses to local entities, and RPC status to local use-case errors.
-6. Construct the shared `GRPCClient` in the executable composition root from scoped required host/port configuration.
+6. Construct the shared `GRPCClient` in the executable composition root from scoped required host/port configuration, with the stack's mTLS client factory.
 7. Inject it into the consumer use cases and include it in `ServiceGroup`.
 
 Do not leave the old Postgres database/context variable in composition once no local use case for the extracted feature consumes it. Remove obsolete imports and manifest dependencies from the affected target.
 
 ## 6. Wire deployment
 
-1. Add dedicated service database credentials to `.env.example`.
-2. Add `<service>-postgres` with Postgres 18 and `/var/lib/postgresql` volume mounting.
-3. Add `<service>-migrate`, gated on the database health check.
-4. Add `<service>`, gated on successful migration and available only on the internal network.
-5. Add consumer `GRPC_<SERVICE>_HOST` and `_PORT` using the producer's name on the internal network.
-6. Add a consumer dependency on the service for startup ordering.
-6a. Add the service to the certificate script's process list, merge `*tls`, mount its own subdirectory of the certificate volume read-only, and gate it on `tls-init` ([environment.md](environment.md)).
-7. Render and validate the environment ([environment.md](environment.md)) and verify image names and commands.
+1. Add the service's database to `postgres-init` and its role credentials to `.env.example`.
+2. Add `<service>-migrate`, gated on `postgres-init`.
+3. Add `<service>`, gated on successful migration and available only on the internal network.
+4. Add the service to the certificate script's process list, merge `*tls`, mount its own subdirectory of the certificate volume read-only, and gate it on `tls-init`.
+5. Add consumer `GRPC_<SERVICE>_HOST` and `_PORT` using the producer's name on the internal network, and a consumer `depends_on` for startup ordering.
+6. Render and validate with `docker compose config` and verify image names and commands.
 
 On a managed container platform or any other ingress, expose only the public HTTP edge. gRPC service-to-service traffic stays private and mutually authenticated; the certificate volume is created by the same Compose file, so a platform that runs it needs no host-side step.
 
@@ -126,7 +130,7 @@ Run the smallest checks early and full checks at gates:
 | Proto package | `swift build`; inspect target/product and versioned path |
 | Producer | `swift build`, migration registration, executable help/command tree |
 | Consumer | full build; search for direct persistence references |
-| Deployment | Environment render, database health gate, migration completion gate, internal DNS/env alignment |
+| Deployment | `docker compose config`, database health gate, migration completion gate, internal DNS/env alignment, certificate mount |
 
 Also inspect the final diff and dirty state in every repository. Do not claim failures caused by pre-existing changes were introduced by the extraction.
 

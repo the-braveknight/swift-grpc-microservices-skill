@@ -15,28 +15,30 @@ Initialize the directory first:
 swift package init --type executable
 ```
 
-Then reshape the generated package. Keep Swift tools 6.3, Swift language mode 6, the current package's platform floor, and dependency versions aligned across the repository set unless the user asks to upgrade.
+Then reshape the generated package. Keep the Swift tools version, Swift language mode 6, the platform floor, and dependency versions aligned across the organization's repositories unless the user asks to upgrade.
 
 ## Dependency baseline
 
-Use this package set for the architecture in this skill. Treat these versions as the supported baseline, not an instruction to downgrade a repository that already uses compatible newer releases.
+These are the packages the architecture is built on. The versions are a floor from when this skill was last revised, not an instruction to downgrade a repository that already uses compatible newer releases; align with the organization's other services first, then with the newest compatible release.
 
 | Package | Baseline | Products/purpose |
 | --- | --- | --- |
-| `swift-argument-parser` | `1.8.2` | `ArgumentParser` for `serve` and `database migrate` commands |
+| `swift-argument-parser` | `1.8.2` | `ArgumentParser` for the command tree |
 | `swift-configuration` | `1.2.0` | `Configuration` and `EnvironmentVariablesProvider` |
 | `swift-service-lifecycle` | `2.11.0` | `ServiceLifecycle` and `ServiceGroup` |
 | `swift-log` | `1.15.0` | `Logging` facade (also linked by `<Service>Core` so use cases log domain events) |
-| `swift-log-loki` | `2.0.0` | `LoggingLoki` — in-process log shipping to Grafana Loki |
+| `swift-log-loki` | `2.0.0` | `LoggingLoki` — in-process log shipping to the aggregator |
 | `postgres-migrations` | `1.2.0` | `PostgresMigrations` |
-| `postgres-nio` | `1.33.1` | `PostgresNIO`, `PostgresClient`, prepared statements, and transactions |
-| `grpc-swift-2` | `2.4.0` | `GRPCCore`, `GRPCClient`, and `GRPCServer` |
+| `postgres-nio` | `1.33.1` | `PostgresNIO`, `PostgresClient`, prepared statements, transactions |
+| `grpc-swift-2` | `2.4.0` | `GRPCCore`, `GRPCClient`, `GRPCServer` |
 | `grpc-swift-nio-transport` | `2.9.1` | `GRPCNIOTransportHTTP2` |
 | `grpc-swift-extras` | `2.2.0` | `GRPCServiceLifecycle` adapters |
 | `grpc-swift-protobuf` | `2.4.0` | `GRPCProtobuf` and `GRPCProtobufGenerator` |
 | `swift-protobuf` | `1.32.0` | `SwiftProtobuf` messages and well-known types |
-| `swift-temporal-sdk` | `1.0.0` | `Temporal` Workflows, Activities, clients, and workers when durable orchestration is required |
-| shared `<project>-protos` package | first compatible release, such as `0.1.0` | `<Service>Protos` |
+| `swift-temporal-sdk` | `1.0.0` | `Temporal` — only with durable orchestration |
+| `hummingbird-auth` | current | `HummingbirdBcrypt` — only in a `<Service>Bcrypt` adapter target |
+| `<project>-protos` | first compatible tag | `<Service>Protos` |
+| `<project>-identity` | first compatible tag | `Identity`, `IdentityGRPC`, `ServiceIdentity` as needed |
 | `swift-container-plugin` | `1.3.0` | `build-container-image` command plugin |
 
 Declare them at package level:
@@ -56,19 +58,17 @@ dependencies: [
     .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.4.0"),
     .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.32.0"),
     .package(url: "https://github.com/apple/swift-temporal-sdk.git", from: "1.0.0"), // only with Temporal
-    .package(
-        url: "https://github.com/<organization>/<project>-protos.git",
-        from: "0.1.0"
-    ),
+    .package(url: "https://github.com/<organization>/<project>-protos.git", from: "0.1.0"),
+    .package(url: "https://github.com/<organization>/<project>-identity.git", from: "0.1.0"),
     .package(url: "https://github.com/apple/swift-container-plugin.git", from: "1.3.0"),
 ]
 ```
 
-Do not add every product to every target. Declare only the direct products imported by that target, using the manifest shape below. The container plugin is invoked from the package command line and does not need to be attached to a source target.
+Do not add every product to every target. Declare only the direct products imported by that target. The container plugin is invoked from the package command line and is not attached to a source target.
 
-Depend on organization packages by tagged URL, never by `.package(path:)`. A path dependency builds only where the sibling repository happens to be checked out, so CI and container builds fail on a package that resolves locally — and a service can silently build against uncommitted contract changes. Publish and tag first, then pin `from:` the release containing what the service imports. Contract additions are additive: tag them as a minor release so consumers on the same major range pick them up without a manifest edit.
+Depend on organization packages by tagged URL, never by `.package(path:)`. A path dependency builds only where the sibling repository happens to be checked out, so CI and container builds fail on a package that resolves locally — and a service can silently build against uncommitted contract changes. Publish and tag first, then pin `from:` the release containing what the service imports. Contract additions are additive: tag them as a minor release so consumers on the same major range pick them up without a manifest edit. How to verify a cross-repository change before tagging is in [identity-and-access.md](identity-and-access.md) under *The shared identity package*.
 
-Targets inside a package do not repeat the organization prefix; the package name already carries it. After renaming a target, delete `.build` in that package and every consumer, or the stale `.swiftmodule` keeps the old module name and the compiler insists a module both exists and does not.
+After renaming a target, delete `.build` in that package and every consumer, or the stale `.swiftmodule` keeps the old module name and the compiler insists a module both exists and does not.
 
 ## Exact source tree
 
@@ -82,6 +82,10 @@ Sources/
     <Service>.swift
     Configuration/
       PostgresClient.Configuration+ConfigReader.swift
+      TransportSecurity+ConfigReader.swift
+      LokiLogProcessorConfiguration+ConfigReader.swift
+      IdentityVerifier.Configuration+ConfigReader.swift
+      ServiceIdentityCredentials+ConfigReader.swift   # only for a process that calls as itself
     Database/
       Database.swift
       Migrate/
@@ -90,11 +94,15 @@ Sources/
       Serve.swift
     Worker/
       Worker.swift                 # only with Temporal
+    ServiceCredentials/            # only on the authenticating service
+      ServiceCredentials.swift
+      Create.swift
   <Service>Core/
     Database/
       Database.swift
     <Features>/
       <Entity>.swift
+      <Rule>Policy.swift
       Repository/
         <Entity>Repository.swift
         <Entity>RepositoryError.swift
@@ -114,6 +122,7 @@ Sources/
       PostgresContext.swift
       PostgresDatabase.swift
     Migrations/
+      CreateServiceRole.swift
       <Entity>/
         Create<Entities>Table.swift
     Repositories/
@@ -142,22 +151,21 @@ Sources/
 
 Use plural feature folders such as `Items`, then group repository and use-case artifacts within that feature. Do not create top-level `Entities`, `UseCases`, or `Repositories` buckets in Core. In Postgres, group by technical responsibility and then entity because those files implement infrastructure mechanics.
 
-In GRPC, keep the generated-service conformance at the feature root. Put every request/input and entity/message conversion in that feature's single `Protobuf/` directory. Do not split it further into request and response folders.
+In GRPC, keep the generated-service conformance at the feature root. Put every request/input and entity/message conversion in that feature's single `Protobuf/` directory. Do not split it further.
 
 When Temporal is required, keep its SDK dependency and all macro-decorated Workflows and Activities in `<Service>Workflows`. Keep Core free of Temporal by defining the workflow-client and Activity-service protocols plus workflow state/result values there.
 
 ## Manifest shape
-
-Use this dependency direction:
 
 ```swift
 targets: [
     .target(
         name: "<Service>Core",
         dependencies: [
-            // The swift-log facade only, so use cases can log domain events. Concrete
-            // handlers (Loki, stdout) are wired in the executable, never here.
+            // The swift-log facade only, so use cases can log domain events.
+            // Concrete handlers are wired in the executable, never here.
             .product(name: "Logging", package: "swift-log"),
+            .product(name: "Identity", package: "<project>-identity"), // only if Core reads the caller
         ]
     ),
     .target(
@@ -176,7 +184,8 @@ targets: [
             .product(name: "GRPCCore", package: "grpc-swift-2"),
             .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
             .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-            .product(name: "<Service>Protos", package: "<project>-protos")
+            .product(name: "IdentityGRPC", package: "<project>-identity"),
+            .product(name: "<Service>Protos", package: "<project>-protos"),
         ]
     ),
     .target(
@@ -191,7 +200,6 @@ targets: [
         dependencies: [
             "<Service>Core",
             .product(name: "HummingbirdBcrypt", package: "hummingbird-auth"),
-            .product(name: "NIOPosix", package: "swift-nio"),
         ]
     ), // one adapter target per provider SDK
     .executableTarget(
@@ -206,6 +214,8 @@ targets: [
             .product(name: "GRPCCore", package: "grpc-swift-2"),
             .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
             .product(name: "GRPCServiceLifecycle", package: "grpc-swift-extras"),
+            .product(name: "Identity", package: "<project>-identity"),
+            .product(name: "IdentityGRPC", package: "<project>-identity"),
             .product(name: "Logging", package: "swift-log"),
             .product(name: "LoggingLoki", package: "swift-log-loki"),
             .product(name: "PostgresMigrations", package: "postgres-migrations"),
@@ -218,6 +228,6 @@ targets: [
 swiftLanguageModes: [.v6]
 ```
 
-Include a direct product dependency in every target that imports its module. For example, the executable—not the feature target—needs `GRPCNIOTransportHTTP2` when it constructs the transport. Remove dependencies inherited from the monolith that the extracted slice does not import.
+Include a direct product dependency in every target that imports its module. The executable — not the feature target — needs `GRPCNIOTransportHTTP2` because it constructs the transport. Remove any dependency a target does not import.
 
 Do not expose internal library products by default. The executable is the package product. Internal targets communicate through `package` declarations.

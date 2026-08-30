@@ -1,154 +1,234 @@
 ---
 name: swift-grpc-microservices-skill
-description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems using strict reusable module and code conventions. Use when creating a service or multi-service system from scratch, defining service boundaries and communication patterns, structuring SwiftPM packages, designing versioned protobuf contracts, implementing Postgres ownership and transactions, wiring grpc-swift clients or servers, coordinating durable Temporal workflows and workers, preserving XUseCase/XRepository/XCommand boundaries, adding composition roots and Docker Compose deployment, or extracting bounded contexts from a modular monolith.
+description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems with an opinionated, experience-derived architecture. Use when creating a service or multi-service system, defining service boundaries and communication, structuring SwiftPM service packages, designing versioned protobuf contracts, implementing Postgres ownership, row-level security and idempotent writes, wiring grpc-swift servers and clients with mutual TLS, issuing and verifying caller and service identities, fronting a system with a Hummingbird HTTP gateway, coordinating durable Temporal workflows and workers, composing executables and Docker Compose environments, or extracting bounded contexts from a modular monolith.
 ---
 
 # Swift gRPC Microservices
 
-Use this skill as an end-to-end architecture and implementation specification for greenfield Swift distributed systems, individual microservices, and modular-monolith extractions. Preserve its naming, module boundaries, folder structure, composition roots, formatting, and deployment topology unless the user explicitly changes a convention.
+An end-to-end architecture and implementation specification for Swift distributed systems: one service, a whole system, the HTTP surface in front of it, and the extraction of services from a monolith. It encodes a specific way of building — names, module boundaries, folder layout, composition roots, security posture, and deployment shape — learned from running such systems. Preserve every convention here unless the user explicitly changes it; where the user's repository already has an established convention that differs, the repository wins for unrelated code.
 
-## Load the required references
+## Load the references
 
-Read these files before changing code:
+Read the reference that owns a topic before touching that topic. Each topic has exactly one home; other files point to it.
 
-- Read [architecture.md](references/architecture.md) for every task.
-- Read [swift-style.md](references/swift-style.md) before creating or editing Swift.
-- Read [service-package.md](references/service-package.md) when creating or reshaping a service package.
-- Read [core.md](references/core.md) when implementing entities, repositories, commands, use cases, or contexts.
-- Read [persistence.md](references/persistence.md) when implementing Postgres, transactions, statements, repositories, or migrations.
-- Read [grpc-and-protos.md](references/grpc-and-protos.md) when defining contracts or implementing producer and consumer transports.
-- Read [composition.md](references/composition.md) when wiring executables, configuration, or lifecycle.
-- Read [environment.md](references/environment.md) — and only it — for anything about the running environment: images, orchestration, ports, secrets, the tailnet sidecar, first start, and cutover. No other reference describes the environment.
-- Read [api-gateway.md](references/api-gateway.md) when building or changing the HTTP surface in front of the system: Hummingbird routing, request contexts, controllers, OpenAPI types, or HTTP-to-RPC translation.
-- Read [identity-and-access.md](references/identity-and-access.md) when a caller must be identified or a capability protected: signing keys, token issuance, transport interceptors or middleware, propagating a caller between services, or a process — a worker, a webhook handler — that must call other services as itself.
-- Read [distributed-systems.md](references/distributed-systems.md) for every greenfield multi-service system and every task involving cross-service communication, consistency, resilience, security, or observability.
-- Read [temporal-workflows.md](references/temporal-workflows.md) in full when adding or changing Temporal workflows, Activities, clients, signals, queries, timers, or workers.
-- Read [extraction-runbook.md](references/extraction-runbook.md) in full when extracting a bounded context or decomposing an existing monolith.
+| Task | Read |
+| --- | --- |
+| Every task | [architecture.md](references/architecture.md) |
+| Creating or editing Swift | [swift-style.md](references/swift-style.md) |
+| Creating or reshaping a service package, manifest, or dependency set | [service-package.md](references/service-package.md) |
+| Entities, commands, repositories, contexts, use cases, policies | [core.md](references/core.md) |
+| Postgres, statements, transactions, migrations, the service role, row-level security, idempotent writes | [persistence.md](references/persistence.md) |
+| Proto contracts, producer and consumer adapters, error-to-status mapping | [grpc-and-protos.md](references/grpc-and-protos.md) |
+| Executables, configuration, logging bootstrap, lifecycle, transport-security factories | [composition.md](references/composition.md) |
+| Signing keys, tokens, interceptors, middleware, caller propagation, service identities | [identity-and-access.md](references/identity-and-access.md) |
+| The HTTP gateway: routing tiers, request contexts, OpenAPI, HTTP-to-RPC translation | [api-gateway.md](references/api-gateway.md) |
+| Temporal workflows, Activities, clients, signals, queries, timers, workers | [temporal-workflows.md](references/temporal-workflows.md) — read in full |
+| Service boundaries, communication choice, consistency, resilience, observability | [distributed-systems.md](references/distributed-systems.md) |
+| Images, Compose, ports, secrets, certificates, the gateway's address, first start | [environment.md](references/environment.md) — the only file that describes the running environment |
+| Extracting a bounded context from an existing monolith | [extraction-runbook.md](references/extraction-runbook.md) — read in full |
 
-## Follow the governing rules
+## Principles
 
-1. Name service targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`. Add `<Service>Workflows` only when the service uses Temporal, and one `<Service><Technology>` leaf target per third-party provider SDK; never substitute `Domain`, `Application`, or `Infrastructure`.
-2. Use `XUseCase`, `XUseCaseProtocol`, `XUseCaseInput`, `XUseCaseError`, `XUseCaseContext`, `XRepository`, `XRepositoryError`, and repository-facing `XCommand` names.
-3. Keep Core independently buildable. It may link a focused library such as `swift-crypto`, the `swift-log` logging *facade* (so use cases can log domain events — the concrete handlers are still wired only in the composition root), or a shared contract package, but never an infrastructure SDK: Postgres, gRPC, protobuf, a concrete logging backend, configuration, mail or payment providers, or server libraries. A third-party SDK is what earns an adapter target; conforming to a Core protocol does not.
-4. Keep the `Database` protocol in Core. Use `withConnection` for a single repository operation and `withTransaction` only for a multi-operation atomic use case — except in a service that confines callers with row-level security, whose protocol declares `withTransaction` alone because the caller's identity is stamped on the transaction and a read outside one sees no rows. Do not hold a database transaction across an RPC; the sole exception is rotating a single-use secret, where a post-commit failure would destroy a valid credential, and only with an explicit deadline on the call.
-5. Let repositories or the database stamp persistence-owned dates. Use a database default such as `DEFAULT NOW()` in Postgres. Do not inject a `now` closure into a use case.
-6. Start with primitive domain values when sufficient. Introduce value objects only for established invariants or behavior, not architectural ceremony. Keep business rules in Core as plain structs named `XPolicy` or `XValidator` — never protocols, never injected — and name a duration `expiration`. Configuration is deployment wiring; a policy is a product decision the composition root translates configuration into. Do not inject a concrete struct that has no protocol.
-7. Give every service sole ownership of its database. Use unqualified table names and no service-named Postgres schema. Name migrations for the database change without a redundant service prefix.
-8. Put protobuf conversions in the transport feature's `Protobuf/` directory using semantic `X+Protobuf.swift` names. Keep the generated-service conformance at the feature root. Do not create generic `Mappings` or `Adapters` directories.
-9. Store canonical `.proto` files only in the shared `<project>-protos` Swift package at `https://github.com/<organization>/<project>-protos.git`. Nest proto files by organization, service, and version. Do not copy schemas into producers or consumers.
-10. Use `package` access between targets in one service package. Expose `public` API only from separately consumed packages or established cross-target APIs.
-11. Keep caller-facing use-case protocols and local entities at consumer boundaries. Do not leak generated messages into HTTP handlers or Core business code.
-12. Give every target its direct dependencies in `Package.swift`; never rely on transitive imports.
-13. Use gRPC for synchronous capability calls. Add asynchronous messaging, workflow orchestration, outbox delivery, or projections only when product consistency and delivery requirements justify them. Never share databases or create distributed transactions.
-14. Construct long-lived clients and servers once in executable composition roots and manage them with `ServiceGroup`, graceful shutdown, scoped configuration, and structured logging.
-15. Mutually authenticate every internal gRPC connection — service to service, and every client of the workflow engine — with a private CA the stack issues itself at first start. There is no plaintext mode: each process gets one leaf whose SAN is its service name, presents it in both directions, mounts only its own, and refuses to start without it. Configure the material by path (rule 30) through two `static func mTLS(config:)` factories on the transport-security types, one per direction, in each service's own `Configuration` folder — never a shared struct or a mode variable. Never expose internal gRPC ports publicly, and do not add a service mesh to do what a CA and a volume do. The stack's CA reaches only the stack: a `TemporalClient` or `TemporalWorker` pointed at Temporal Cloud uses TLS with the system trust roots and an API key, never the internal leaf or the internal CA as trust roots — the frontend is outside the stack and its certificate chains to a public CA.
-16. For existing systems, preserve behavior and unrelated user changes. For greenfield systems, state consequential assumptions and choose the smallest architecture that satisfies current requirements.
-17. Keep Temporal SDK code in `<Service>Workflows`. Keep workflow-facing protocols, states, results, and Activity service ports in Core without importing Temporal.
-18. Keep Workflow code deterministic and side-effect free. Put database, network, email, and cross-service work in retry-safe Activities.
-19. Commit PostgreSQL work before starting or signaling a workflow. Never hold a transaction across a Temporal operation, and do not add a periodic reconciliation loop, signal-with-start, or persisted workflow-resume logic unless the user explicitly requires it.
-20. Use deterministic workflow IDs, `.rejectDuplicate` reuse, `.useExisting` conflicts, signal-only commands, and queries for observation. Do not wait for workflow completion from a signal command.
-21. Generate every persistent entity identifier in the database that owns the entity, using `UUID DEFAULT uuidv7()`. Omit that identifier from create commands and create RPC requests; return it from the owner after insertion. Never preallocate or generate another service's identifier.
-22. Model non-identifier secrets such as verification and refresh tokens as one Core value type that mints and digests, not a generator protocol. Persist only the SHA-256 digest, hand the value to its bearer once, give the column no generation default, and delete the row at terminal state. Reserve bcrypt for user-chosen passwords.
-23. Make every remotely retryable mutation idempotent in the service that owns the side effect. Use a stable, namespaced operation key, enforce it atomically with persistence or the provider, return the prior outcome for the same canonical input, and reject reuse with different input. Never use an idempotency key as authorization or as an entity identifier.
-24. Guard every state transition in the `WHERE` clause and treat the absent row as the lost race. Carry only the destination state in the command and derive its one legal predecessor from the state enum.
-25. Translate an error only where the translation carries information. Never funnel every failure of an adapter into a single-case enum; let the infrastructure error propagate and classify it where the distinction is actionable. Name a repository error for the constraint that exists.
-26. Depend on organization packages by tagged URL, never `.package(path:)`. Publish and tag the shared package before a service pins it.
-27. Put the claim payload, signer, verifier, and one product per transport in a shared `<project>-identity` package, and sign with an asymmetric key. The service that authenticates users holds the private key and is the only issuer; every other service gets the public key. Never use a shared HMAC secret, which makes every verifier a forger. Keep the payload's memberwise initializer internal so the signer is its only source, let the signer own `iss` and `iat`, and have it return the identity it made so the caller reports the expiry it signed rather than reading the clock twice.
-28. Identify a caller and require one as separate interceptors. Identification passes an untokened call through anonymously and refuses a token that is present but does not verify; enforcement is applied only to protected RPCs. Exclude the RPCs that issue a session — password login and token refresh — from identification entirely, or a client that attaches its expired token to every call is refused the only call that could replace it.
-29. Propagate a caller by forwarding the token it arrived with, bound alongside the identity in a task local because `ServerContext` carries no metadata. Register the forwarding interceptor on the client rather than per call, never reissue a token, and let a call made outside any caller's request go out unauthenticated — unless the process holds a service identity, in which case it presents that through a separate client (rule 38).
-30. Configure key material by path and open the file in the composition root, not the library. A path is the form NIOSSL and grpc-swift already take credentials in — `TLSConfig.CertificateSource.file(path:format:)`, `NIOSSLCertificate.fromPEMFile` — so TLS material configures identically, and it keeps a private key out of the environment, where it is readable from `/proc/<pid>/environ`, reported by the runtime's inspect command, and inherited by every child process. Mount each key as a deployment secret, fail loudly naming both the key and the path, and generate the pair with a script that writes PEM files under a `0700` directory with `umask 077` set before `openssl` writes. Merge the verification anchor into every service that verifies, and confirm it renders: an unreferenced YAML anchor is ignored, so its `${VAR:?message}` guard never fires. Where a system still carries the encoded document instead, test the input for a PEM header before attempting base64 — decoding tolerates every character a PEM contains and silently produces rubbish.
-31. A gateway is not a service. Name the package `<organization>-api`, give it exactly two targets — `API` for the surface and `<Project>` for the composition root — and add no Core, Postgres, or provider target. Keep `openapi.yaml` in the `API` target directory beside its generator configuration and generate `types` only; the gateway registers its own routes, so generated server stubs are a second routing mechanism.
-32. Chain gateway request contexts `BasicRequestContext` → `IdentityRequestContext` → `AdminRequestContext`, and carry `coreContext` across rather than rebuilding it from the parent. `CoreRequestContextStorage.init(source:)` starts `parameters` and `endpointPath` empty, so rebuilding silently discards path parameters already extracted and a route declared with `:id` matches and then cannot find it.
-33. Register HTTP routes in three tiers: session-issuing routes outside the authenticating middleware, an identifying tier that still admits an anonymous request, and a requiring tier. This is the gRPC session-RPC exclusion restated one transport over — token refresh carries a refresh token in the `Authorization` header, so an authenticating middleware verifies it as a claim payload, fails, and refuses the route before its handler runs. Group by tier; never add a path exception inside the middleware.
-34. Give administrative routes the same path as the resource they act on and separate them with a request-context conversion at the verb, never an `/admin` path prefix. Keep verb-shaped routes verb-shaped: sessions, provider webhooks, and checkout callbacks are workflows, not resources. Where two operations would share a method and path but differ in scope, keep them distinct rather than collapsing them into one operation with two meanings.
-35. Map `RPCError` to HTTP by code and answer every failure as RFC 9457 problem details. Never collapse upstream failures into 500 — the producing service already classified the failure, and discarding that at the last hop tells a client to retry what cannot succeed.
-36. Publish nothing that nothing outside the stack calls — with a tailnet sidecar owning the gateway's address, that is nothing at all. Keep every environment concern — images, orchestration, ports, secrets, the sidecar, first start — in environment.md alone; the other references say only that a value comes from the environment.
-37. Give a process that calls other services as itself the `service` role, never `admin`: an admin token works at the HTTP edge too. Its subject is a credential name, so a person-only guard tests the role before it parses the subject — the shared `IdentityContext.require…Identity()` checks in the gRPC product do this once; a handler calls one and keeps only the check that is its own — a credential can be issued under any name, including a UUID — and the gateway refuses `service` with `requireUser()` on every route that sends the subject upstream as a user id. Which RPCs admit a process is each service's per-RPC decision, like the admin check. Bump every verifying service to the identity tag that decodes the new role before the first such token is minted.
-38. Issue a process its credential with an operator command on the authenticating service, never an RPC: a name, a minted secret printed once, only the bcrypt digest stored in the issuer's database. Exchange it through a public `IssueServiceToken` RPC that answers an unknown id and a wrong secret identically, returning a token with its own lifetime and no refresh token — the expiry is the revocation delay. On the consumer, keep the session, the interceptor, and the `IssueServiceToken` adapter together in a `ServiceIdentity` product of the identity package — the one product there that links the authentication contract — and never in the issuer's own package. One client per identity: a client carrying the service interceptor speaks as the process on every call, and a process that also forwards callers uses a second client. Exchange once at startup, racing the service group, so a bad credential fails there.
-39. Make `CreateServiceRole` the first migration of every service: `CREATE ROLE <service>_service LOGIN PASSWORD`, `GRANT CONNECT`, schema usage, DML on all tables and sequences, and the same as default privileges — plain statements, nothing more. Migrations run as the owner; `serve`, `worker`, and every other command connect as the service role. Do this whether or not the service has row-level security, because the owner is exempt from every policy and the migration library refuses a reordered list, so a role added later cannot be made first without re-migrating.
-40. Confine caller-owned rows with Postgres row-level security, and state the rule once: policies in migrations, never a scope restated in every statement. The policies are enforced against the service role of rule 39. Stamp each transaction with `set_config('app.caller_role', …, true)` and, for a person only, `app.caller_user_id` — bound parameters, transaction-scoped, named for the caller because a caller need not be a user. Keep `NULLIF(current_setting(…, true), '')::uuid` in every policy, admit `service` beside `admin`, and verify as the service role: as the owner every test passes with the policies off. The handler still answers what a policy cannot — `permissionDenied` for a named user who is not the caller, and a process on a person-only RPC.
+The rules below follow from these. When a situation is not covered, decide from the principle.
+
+1. **A service owns a capability and everything about its data.** Its database, identifiers, timestamps, constraints, migrations, contract, and lifecycle. Nothing else reads its tables; nothing else generates its identifiers.
+2. **Dependencies point inward, and a third-party SDK earns its own target.** Core links focused libraries, never infrastructure SDKs. Conforming to a Core protocol does not earn a target; linking a vendor SDK does.
+3. **A protocol exists only where substitution is real.** Use cases, repositories, per-use-case contexts, the database, workflow clients, Activity services. Entities, commands, policies, and configuration stay concrete.
+4. **The database is the authority.** It generates identifiers and dates, enforces uniqueness, guards state transitions in the `WHERE` clause, and confines callers with policies. Application code never re-implements what a constraint states.
+5. **Retry safety lives with the owner of the side effect.** An idempotency key is enforced atomically where the write happens — never in memory, never in a caller, never in workflow history.
+6. **A token says who is calling; the service decides what they may do.** Roles travel; permissions do not. Identification is shared infrastructure; enforcement is per-RPC, per-service code.
+7. **Key material is a file; configuration carries a path.** Private keys, certificates, and credentials are mounted, opened in the composition root, and fail loudly at startup naming the path.
+8. **Nothing is plaintext and nothing is published.** Every internal connection is mutually authenticated by a CA the stack issues itself; no internal port reaches a host interface.
+9. **Duplicate small shapes; share only contracts and identity, by tag.** A `Database` wrapper or a configuration extension is eight lines a service owns. A shared package costs a tag and a bump in every consumer.
+10. **Choose the smallest architecture that satisfies current requirements.** gRPC is the default. Messaging, workflow orchestration, outboxes, and projections are added from a stated requirement, never speculatively.
+11. **Translate an error only where the translation adds information.** A one-case enum every failure funnels into destroys the cause; let it propagate and classify where the distinction is actionable.
+12. **Fail at startup, not at the first request.** Required configuration, key files, certificates, and credential exchanges are checked before the process serves.
+
+## Governing rules
+
+### Package, targets, and naming
+
+1. Name targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`; add `<Service>Workflows` only with Temporal and one `<Service><Technology>` leaf per third-party provider SDK. Never `Domain`, `Application`, `Infrastructure`, `Mappings`, or `Adapters`.
+2. Use `XUseCase`, `XUseCaseProtocol`, `XUseCaseInput`, `XUseCaseError`, `XUseCaseContext`, `XRepository`, `XRepositoryError`, `XCommand`, `XPolicy`, `XValidator`, `XStatement`, `PostgresXRepository`, `XService`, `XWorkflow`, `XActivities`, `TemporalXWorkflowClient`.
+3. Keep Core independently buildable. It may link `swift-crypto`, the `swift-log` facade, or the shared identity package; never Postgres, gRPC, protobuf, a logging backend, configuration, a provider SDK, or a server framework.
+4. Give every target its direct dependencies in `Package.swift`; never rely on transitive imports. Use `package` access between targets of one package; `public` only from separately consumed packages.
+5. Depend on organization packages by tagged URL, never `.package(path:)`. Publish and tag the shared package before a service pins it.
+6. Do not extract a shared foundation package for `Database`, contexts, configuration, or logging bootstrap. Duplicate the shape per service.
+
+### Core
+
+7. Model entities and commands as immutable `Sendable` structs. Start with primitive values; introduce a value object only for an established invariant or behavior.
+8. Keep business rules as plain structs named `XPolicy` or `XValidator` — never protocols, never injected. Configuration is deployment wiring; a policy is a product decision the composition root translates configuration into. Name a duration `expiration`.
+9. Do not inject a concrete type that has no protocol. Either the seam is real and the parameter is a protocol, or the type is constructed where it is used.
+10. Keep the `Database` protocol in Core. Use `withConnection` for one repository operation and `withTransaction` only for a multi-operation atomic use case — except in a service that confines callers with row-level security, whose protocol declares `withTransaction` alone.
+11. Never hold a database transaction across a remote call. The sole exception is rotating a single-use secret, with an explicit deadline on the call well under the pool's wait time.
+12. Let the database stamp persistence-owned dates with `DEFAULT NOW()`. Do not inject a `now` closure or clock into a use case.
+13. Inject a `Logger` into a use case that performs a meaningful mutation, and log the domain event there: `info` on success, `warning` on a known refusal, `error` on a genuine failure, with searchable identifiers as metadata and never a secret or payload.
+
+### Persistence
+
+14. Every service owns its whole database: unqualified table names, no service-named schema, migrations named for the change without a service prefix, one create migration per table, registered explicitly in dependency order.
+15. Generate every entity identifier in the owning database with `UUID DEFAULT uuidv7()`. Omit it from create commands and create RPC requests; return it from the owner after insertion. Never preallocate or generate another service's identifier.
+16. Name stored dates as nouns — `creation_date`, `update_date`, `expiration_date` — and the Swift forms `creationDate`, `updateDate`, `expirationDate`. Never `created_at` or `somethingAt`. Use `Id`, not `ID`, in Swift names.
+17. Model a non-identifier secret — a verification or refresh token — as one Core value type that mints and digests. Persist only the SHA-256 digest, hand the value to its bearer once, give the column no generation default, delete the row at terminal state. Reserve bcrypt for user-chosen passwords and service credentials.
+18. Make every remotely retryable mutation idempotent in the service that owns the side effect: a stable, namespaced key, enforced atomically by the database or the provider, returning the prior outcome for the same canonical input and rejecting reuse with different input. Never use the key as authorization or as an entity identifier.
+19. Guard every state transition in the `WHERE` clause and treat the absent row as the lost race. Carry only the destination state in the command and derive its one legal predecessor from the state enum.
+20. Enforce liveness-scoped uniqueness with a partial unique index over the active states, and name a repository error for the constraint that exists.
+21. Make `CreateServiceRole` the first migration of every service. Migrations run as the owner; every other command connects as the service role.
+22. Confine caller-owned rows with row-level security: policies in migrations, never a scope restated in statements; stamp each transaction with the caller's role and, for a person, user id, using bound `set_config(…, true)`; keep `NULLIF` in every policy; admit `service` beside `admin`; verify as the service role. The handler still answers what a policy cannot — `permissionDenied` for a named user who is not the caller.
+
+### Contracts and transport
+
+23. Keep canonical `.proto` files only in the shared `<project>-protos` package, nested by organization, service, and version, starting at `v1`. Never copy schemas into producers or consumers.
+24. Put protobuf conversions in the transport feature's `Protobuf/` directory as `X+Protobuf.swift`; keep the generated-service conformance at the feature root. Perform transport validation — UUID parsing, enum recognition, range checks — in the conversion initializer.
+25. Keep generated messages out of Core and out of HTTP handlers. A consumer keeps its caller-facing use-case protocol and local entities and replaces only the implementation.
+26. Map typed use-case failures to stable gRPC status codes in the producer; map status codes back to the consumer's local errors. Never let `PSQLError`, SQLSTATE, or `RPCError` reach Core.
+27. Format UUIDs lowercased on the wire. Refuse an unrecognized enum value rather than reading it as the least privilege.
+28. Use gRPC for synchronous capability calls. Add messaging, workflow orchestration, outbox delivery, or projections only from a stated consistency or delivery requirement. Never share databases or create distributed transactions.
+
+### Composition and configuration
+
+29. Name the executable after the service. `serve` is the default subcommand; `database migrate` is nested; `worker` exists only with Temporal.
+30. Construct every long-lived client, server, and worker once in the composition root, under `// MARK:` sections in the order Configuration, Logging, Infrastructure, Composition, Transport, Lifecycle, and own all of them with one `ServiceGroup` with graceful shutdown.
+31. Read configuration with `ConfigReader` scoped by concern (`postgres`, `grpc.server`, `grpc.<upstream>`, `tls`, `jwt`, `temporal`, `loki`). Require infrastructure values and secrets; default only listen address, port, and log level. Require upstream hosts and ports rather than defaulting to `localhost`.
+32. Give each configuration an `init(config:)` extension in the executable's `Configuration` folder. Configure key material by path and open the file there, failing loudly naming both the key and the path.
+33. Bootstrap logging inline in each composition root: stdout plus in-process shipping to the log aggregator, with the service name as a label. No shared logging module.
+
+### Identity and access
+
+34. Put the claim payload, signer, verifier, and one product per transport in a shared `<project>-identity` package. Sign with an asymmetric key; the authenticating service alone holds the private key. Never a shared HMAC secret.
+35. Carry `sub`, `role`, `iss`, `iat`, `exp` and nothing else. Permissions, scopes, and entitlements stay in the service that enforces them. Keep the payload's initializer internal so the signer is its only source, and have the signer return the identity it made.
+36. Identify a caller and require one as separate steps. Identification passes an absent token through anonymously and refuses a token that is present but invalid; requiring is the handler's per-RPC decision. Absent is `unauthenticated`; insufficient is `permissionDenied`.
+37. Exclude the RPCs and routes that issue a session — login, refresh, service-token exchange — from identification entirely.
+38. Propagate a caller by forwarding the token it arrived with, bound alongside the identity in a task local. Register the forwarding interceptor on the client, never reissue a token, and let a call made outside any request go out unauthenticated — unless the process holds its own identity.
+39. Give a process that calls as itself the `service` role, never `admin`. Its subject is a credential name, so every person-only guard tests the role before parsing the subject. Which RPCs admit a process is each service's per-RPC decision; the HTTP gateway refuses `service` on every route that sends the subject upstream as a user id.
+40. Issue a service credential with an operator command on the authenticating service, never an RPC; store only its bcrypt digest; exchange it through a public `IssueServiceToken` RPC that answers an unknown id and a wrong secret identically and returns a token with its own lifetime and no refresh token. Exchange once at startup, racing the service group. One client per identity.
+41. Parse `authorization` yourself: scheme case-insensitively, first entry only, `replaceOrAddString` when attaching, the same parser on every transport.
+
+### Transport security
+
+42. Mutually authenticate every internal gRPC connection — service to service and every client of the workflow engine — with a private CA the stack issues itself at first start. There is no plaintext mode and no mode variable.
+43. Each process gets one leaf whose SAN is its service name, presents it in both directions, mounts only its own directory, and refuses to start without it. Configure the material by path through two `static func mTLS(config:)` factories on grpc-swift's own transport-security types, one per direction, in each service's `Configuration` folder.
+44. The stack's CA reaches only the stack. A client of a managed workflow engine or any external endpoint uses TLS with the system trust roots and that provider's credential, never the internal leaf or CA.
+
+### Durable workflows
+
+45. Keep Temporal SDK code in `<Service>Workflows`. Keep workflow-client protocols, states, results, and Activity service ports in Core without importing Temporal.
+46. Keep Workflow code deterministic and side-effect free. Put every external effect in a retry-safe Activity with one side effect each; derive idempotency keys from immutable Workflow input, never a UUID minted in Workflow code.
+47. Commit local database work before starting or signaling a Workflow. Never hold a transaction across a Temporal operation. Do not add reconciliation loops, signal-with-start, or workflow-resume-from-database unless the user explicitly requires them.
+48. Use deterministic workflow IDs, `.rejectDuplicate` reuse, `.useExisting` conflicts, signal-only commands, and queries for observation. Do not wait for completion from a signal command.
+49. A worker owns no database. It reaches its service's data over gRPC as a `service`, through worker-facing RPCs the service exposes in a separate gRPC service beside the user-facing one.
+50. Give an Activity a distinct registration name whenever two containers on one worker would otherwise share it.
+
+### API gateway
+
+51. A gateway is not a service. Name the package `<organization>-api` with exactly two targets — `API` and `<Project>` — and no Core, Postgres, or provider target. Keep `openapi.yaml` beside its generator configuration in the `API` target and generate `types` only.
+52. Chain request contexts `BasicRequestContext` → `IdentityRequestContext` → `AdminRequestContext`, carrying `coreContext` across rather than rebuilding it, so path parameters survive.
+53. Register routes in three tiers: session-issuing routes outside the authenticating middleware, an identifying tier that admits anonymous requests, and a requiring tier. Never a path exception inside a middleware.
+54. Give administrative routes the same path as the resource they act on, gated by a context conversion at the verb, never an `/admin` prefix. Keep verb-shaped routes verb-shaped.
+55. Map `RPCError` to HTTP by code and answer every failure as RFC 9457 problem details. Never collapse upstream failures into 500. Make schema conversions throw on a malformed upstream value rather than drop it.
+
+### Environment
+
+56. Keep every environment concern in environment.md alone. Other references say only that a value "comes from the environment".
+57. Publish nothing that nothing outside the stack calls. The gateway gets its address from a sidecar or the platform ingress, not a host port; internal services are reached by name.
+58. Mount secrets as files; guard required variables with `${VAR:?message}`; verify every anchor is referenced; render with `docker compose config` before `up`.
+59. The first start is staged: infrastructure and the issuer's migration, issue service credentials, then everything.
+
+### Working in an existing system
+
+60. Preserve behavior, naming, and unrelated user changes. Make only the boundary-required adjustment when copying code into a new service.
+61. Never infer permission to drop tables, discard data, or delete a migration. Finish the non-destructive work and surface the decision.
+62. For greenfield work, state consequential assumptions and choose the smallest architecture that satisfies current requirements.
 
 ## Choose the workflow
 
-- For one new service, follow **Build a service**.
-- For a new distributed system, follow **Design and build a system**, then repeat **Build a service** for each bounded context.
-- For an existing modular monolith, follow **Extract an existing bounded context** and the extraction runbook.
-- For the HTTP surface in front of a system, follow **Build an API gateway**.
-- For a focused change, load only the relevant references and preserve the established architecture.
+- One new service: **Build a service**.
+- A new distributed system: **Design a system**, then **Build a service** per bounded context, then **Build an API gateway**.
+- An existing modular monolith: **Extract a bounded context** with the runbook.
+- A focused change: load only the relevant references and preserve the established architecture.
 
-## Design and build a system
+### Design a system
 
-1. Capture business capabilities, external actors, scale, latency, availability, security, compliance, and consistency requirements.
-2. Define bounded contexts and data ownership before repositories or RPCs. Produce a service map showing callers, dependencies, and failure boundaries.
-3. Choose local calls, synchronous gRPC, asynchronous events, or durable workflow coordination per interaction. Document why each remote boundary exists.
-4. Define versioned contracts and failure semantics before implementing consumers and producers.
-5. Create the shared proto package, then initialize each independently deployable service with the required SwiftPM target structure.
-6. Build vertical capabilities through Core, Postgres, gRPC, executable composition, and deployment rather than creating empty horizontal layers across every service.
-7. Add deadlines, idempotency, retry rules, observability, health behavior, security, deployment ordering, and failure handling in proportion to the system requirements.
+1. Capture capabilities, actors, scale, latency, availability, security, compliance, and consistency requirements.
+2. Define bounded contexts and data ownership before repositories or RPCs. Produce a service map with callers, dependencies, and failure boundaries; reject cycles.
+3. Choose a local call, synchronous gRPC, an event, or a durable workflow per interaction. Document why each remote boundary exists.
+4. Define versioned contracts and failure semantics before implementing producers and consumers.
+5. Create and tag the shared proto and identity packages, then initialize each service.
+6. Build vertical capabilities through Core, Postgres, gRPC, composition, and environment — not empty horizontal layers across every service.
+7. Add deadlines, idempotency, retries, observability, health behavior, and security in proportion to the requirements.
 
-## Build a service
+### Build a service
 
-1. Always run `swift package init --type executable` before adding targets, folders, or code.
-2. Reshape the package to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`. Add `<Service>Workflows` only when durable orchestration is required.
-3. Implement feature-first Core entities, commands, repositories, context protocols, use-case contracts, typed errors, and use cases.
-4. Implement Postgres database/context, prepared statements, repositories, constraints, error translation, and ordered migrations.
-5. Implement generated gRPC service protocols and feature-local `Protobuf/` conversion directories.
-6. When Temporal is required, implement Workflows, Activities, a Core workflow-client port, a Temporal client adapter, and the executable `worker` command.
-7. Add the `serve` and `database migrate` command composition roots, configuration, logging, and lifecycle management.
-8. Add the service's environment pieces per environment.md.
-9. Build the complete package, then exercise contracts and infrastructure boundaries.
+1. Run `swift package init --type executable`, then reshape to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, `<Service>`, plus `<Service>Workflows` and provider targets only when needed.
+2. Implement feature-first Core: entities, commands, repositories, context protocols, use-case contracts, typed errors, policies, use cases.
+3. Implement Postgres: context, database, statements, repositories, error translation, `CreateServiceRole` first, then ordered migrations; policies where rows belong to callers.
+4. Implement generated gRPC service conformances and feature-local `Protobuf/` conversions, with identity checks per RPC.
+5. With Temporal: Workflows, Activities, the Core workflow-client port, its Temporal adapter, and the `worker` command.
+6. Add `serve` and `database migrate` composition roots with configuration, logging, transport-security factories, and lifecycle.
+7. Add the service's environment pieces per environment.md.
+8. Build the whole package, then exercise contracts, identity paths, and infrastructure boundaries.
 
-## Build an API gateway
+### Build an API gateway
 
-1. Run `swift package init --type executable`, then reshape the package to `API` and `<Project>`.
+1. Run `swift package init --type executable`, then reshape to `API` and `<Project>`.
 2. Put `openapi.yaml` and `openapi-generator-config.yaml` in `Sources/API/`, generating `types` with `package` access.
-3. Implement the request-context chain, the error middleware, and the RFC 9457 problem types.
-4. Implement one controller per resource, holding generated client protocols and exposing registration methods named for the tier they mount into.
-5. Implement `Schemas/Requests` and `Schemas/Responses` conversions that throw on a malformed upstream value rather than dropping it.
-6. Add the `serve` composition root: verifier, one client per upstream with required host and port, the three router tiers, the application, and one `ServiceGroup`.
-7. Add the gateway's environment pieces per environment.md: behind the tailnet sidecar, no host port.
-8. Build, then exercise the tiers directly: a session-issuing route must reach its handler while carrying an unverifiable bearer token, and a protected route carrying the same token must be refused.
+3. Implement the request-context chain, the error middleware, and the problem types.
+4. Implement one controller per resource, holding generated client protocols, with registration methods named for the tier they mount into.
+5. Implement `Schemas/Requests` and `Schemas/Responses` conversions that throw on a malformed upstream value.
+6. Add the `serve` composition root: verifier, one client per upstream with required host and port, the three router tiers, the application, one `ServiceGroup`.
+7. Add the gateway's environment pieces per environment.md.
+8. Build, then exercise the tiers: a session-issuing route must reach its handler while carrying an unverifiable bearer token, and a protected route carrying the same token must be refused.
 
-## Extract an existing bounded context
+### Extract a bounded context
 
 1. Inspect repository instructions, dirty state, package graph, callers, persistence, migrations, jobs, configuration, and deployment.
-2. Trace the bounded context end to end and identify cross-context reads, transactions, shared types, and compatibility seams.
-3. Define and release the versioned contract, build the producer as a standalone service, then preserve the consumer-facing use-case protocol while replacing its implementation with a gRPC client.
+2. Trace the context end to end; identify cross-context reads, transactions, shared types, and compatibility seams.
+3. Define and release the contract, build the producer as a standalone service, then keep the consumer's use-case protocol and replace its implementation with a gRPC client.
 4. Construct one long-lived client in the consumer composition root and run it in `ServiceGroup`.
-5. Deploy a dedicated database, migration job, producer, and consumer in dependency order; move and reconcile data explicitly.
-6. Remove old persistence only after traffic cutover and rollback criteria pass. Never infer permission to discard data.
+5. Deploy the database, migration job, producer, and consumer in dependency order; move and reconcile data explicitly.
+6. Remove old persistence only after cutover and rollback criteria pass.
 
-## Enforce completion gates
+## Completion gates
 
-Do not call a service or system complete until all applicable gates pass:
+Do not call work complete until every applicable gate passes.
 
-- Every service package builds under Swift 6 language mode.
-- Generated protobuf types appear only in proto, transport, and client-boundary code.
-- Postgres types appear only in Postgres and executable composition code.
-- Single-operation use cases use `withConnection`; justified multi-operation units use `withTransaction`.
-- Producers map typed failures to stable gRPC status codes and consumers map them to local contracts.
-- Long-lived clients and servers are lifecycle-managed and shut down gracefully.
-- Temporal clients and workers are lifecycle-managed; Workflows contain no external side effects, and retryable Activities are idempotent.
-- Every service owns a dedicated database with applied migrations and no service-specific schema.
-- Every persistent entity identifier is generated by its owning database and is absent from caller-supplied create inputs.
-- Every retryable mutation and Temporal write Activity has receiver-enforced idempotency and explicit same-key/different-input conflict behavior.
-- Remote calls have explicit failure semantics; retries are limited to safe/idempotent operations.
-- Contracts are versioned and compatibility-safe; canonical protos are not duplicated.
-- Exactly one service holds a signing key; every other service holds only the verifying key.
-- Session-issuing RPCs are excluded from caller identification, and a client presenting an expired token can still refresh.
-- Every transport reads the credential the same way, and a forwarded token reaches the next service unchanged.
-- Every service that verifies a token receives both the key path and the mounted file in its rendered configuration, and a stack missing a key fails to start rather than at the first request.
-- Every gRPC server refuses a client without a certificate the stack's CA signed, every client verifies the server's name against the host it dialled, the workflow engine requires the same client certificate, and a process missing its own certificate fails at startup naming the path.
-- A process that calls as itself holds a `service` credential issued by an operator command, exchanges it at startup, and every person-only guard it could reach tests the role before parsing the subject; every verifying service is on an identity tag that decodes the role.
-- Every service's first migration is `CreateServiceRole`, and every command but `database migrate` connects as that role.
-- A service with row-level security stamps every transaction with the caller's role and, for a person, user id, and its policies were exercised as that role with a user, another user, an administrator, and a process.
-- A gateway package has exactly two targets, owns no database, and keeps its OpenAPI document in the target that generates from it.
-- Child request contexts preserve path parameters; a route declared with a parameter resolves it inside the child.
-- Session-issuing HTTP routes sit outside the authenticating middleware, and a refresh presenting an unverifiable bearer token reaches its handler rather than a 401.
-- Administrative routes share the path of the resource they act on and are gated by a context conversion, not a path prefix.
-- Upstream failures reach the client as problem details carrying the mapped status, not a blanket 500.
-- Logging, metrics/tracing strategy, health behavior, secrets, and network exposure match the operating environment.
-- Deployment ordering and representative dependency failures are verified.
+**Build and boundaries**
+- Every package builds in Swift 6 language mode.
+- Generated protobuf types appear only in proto, transport, and client-boundary code; Postgres types only in Postgres and composition code.
+- Single-operation use cases use `withConnection`; multi-operation units use `withTransaction`; an RLS service has no `withConnection`.
+
+**Persistence**
+- Every service owns a dedicated database; migrations are applied; no service-named schema exists.
+- Every entity identifier is database-generated and absent from create inputs.
+- Every retryable mutation has owner-enforced idempotency with explicit same-key/different-input conflict behavior.
+- The first migration is `CreateServiceRole`, and every command but `database migrate` connects as that role.
+- An RLS service stamps every transaction and its policies were exercised as the service role with a user, another user, an administrator, and a process.
+
+**Contracts and transport**
+- Producers map typed failures to stable status codes; consumers map them to local contracts.
+- Contracts are versioned and additive; canonical protos are not duplicated.
+- Remote calls have explicit failure semantics; retries are limited to idempotent operations.
+
+**Identity and security**
+- Exactly one service holds the signing key; every other service holds only the public key, by path, mounted.
+- Session-issuing RPCs and routes are excluded from identification; a client presenting an expired token can still refresh.
+- A forwarded token reaches the next service unchanged; every transport parses the credential the same way.
+- Every gRPC server refuses a client without a certificate the stack's CA signed; every client verifies the server's name; every process missing its own certificate fails at startup naming the path.
+- Every process that calls as itself holds a `service` credential issued by an operator command and exchanged at startup; every person-only guard tests the role before parsing the subject.
+
+**Workflows**
+- Temporal clients and workers are lifecycle-managed; Workflows contain no side effects; Activities are retry-safe and distinctly named; the worker holds no database.
+
+**Gateway**
+- Two targets, no database, OpenAPI document in the generating target.
+- Child contexts preserve path parameters; administrative routes share the resource path and are gated by context conversion.
+- Upstream failures reach the client as problem details with the mapped status.
+
+**Operations**
+- Every long-lived client, server, and worker is in a `ServiceGroup` with graceful shutdown.
+- Logs carry a service label and searchable identifiers and reach the aggregator; secrets never appear in logs or environment variables.
+- Nothing is published that nothing outside the stack calls; `docker compose config` renders every required value; a stack missing a key fails at `up`.
 - Extraction work leaves no retired direct database access after cutover.
 
 If a gate requires an unresolved product, consistency, security, or data-migration decision, stop at the safe boundary and request that decision rather than inventing behavior.

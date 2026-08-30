@@ -12,23 +12,24 @@ Use a service-oriented SwiftPM package, not textbook layer names. The package is
 ├── <Service>Workflows ────→ <Service>Core  # only with Temporal
 ├── <Service><Technology> ─→ <Service>Core  # one per third-party provider SDK
 └── <Service> ─────────────→ all required targets
-
 ```
-
-Use these exact responsibilities:
 
 | Target | Owns | Must not own |
 | --- | --- | --- |
-| `<Service>Core` | Entities, repository protocols and errors, repository commands, database protocol, policies and validators, use-case protocols/inputs/errors/contexts/implementations | SQL, generated messages, RPC status, configuration, logging, server startup |
+| `<Service>Core` | Entities, repository protocols and errors, repository commands, database protocol, policies and validators, use-case protocols/inputs/errors/contexts/implementations, workflow-client and Activity-service ports | SQL, generated messages, RPC status, configuration, server startup, a logging backend |
 | `<Service><Technology>` | One provider SDK's adapter conforming to a Core port, such as `<Service>Bcrypt` or `<Service>Resend` | Business rules, configuration reading, client construction |
 | `<Service>Postgres` | Postgres context/database, repositories, prepared statements, migrations | Business validation, RPC mapping, CLI parsing |
-| `<Service>GRPC` | Generated-service conformances, request/input mapping, domain/protobuf mapping, RPC error translation | SQL, environment reading, server construction |
-| `<Service>Workflows` | Temporal Workflows, Activity containers, workflow-client adapters, signals, queries, and Temporal error translation | SQL implementations, generated protobuf, environment reading, dependency construction |
-| `<Service>` | ArgumentParser command tree, environment configuration, logging, dependency construction, server/client construction, lifecycle | Reusable business rules |
+| `<Service>GRPC` | Generated-service conformances, request/input mapping, domain/protobuf mapping, RPC error translation, per-RPC identity checks | SQL, environment reading, server construction |
+| `<Service>Workflows` | Temporal Workflows, Activity containers, workflow-client adapters, signals, queries, Temporal error translation | SQL implementations, generated protobuf, environment reading, dependency construction |
+| `<Service>` | ArgumentParser command tree, environment configuration, logging bootstrap, dependency construction, server/client construction, lifecycle | Reusable business rules |
 
-Keep dependencies pointing inward. Core has no dependency on another service's implementation. Zero dependencies is not the rule — Swift server libraries routinely ship a small-dependency core, and Core may link a focused library such as `swift-crypto`, `jwt-kit`, or the organization's shared identity contract. What Core must not link is an infrastructure SDK: a database driver, an HTTP client, a mail or payments provider, a server framework.
+## Dependency direction
 
-A third-party SDK is what earns a `<Service><Technology>` target; conforming to a Core protocol does not. Keep those targets leaves that only the composition root depends on. Core is the root of the internal graph, so a mail SDK there makes `<Service>Postgres` link an HTTP client to run SQL, and an email-template edit recompile every target.
+Dependencies point inward. Core has no dependency on another service's implementation. Zero dependencies is not the rule — Swift server libraries routinely ship a small-dependency core — and Core may link a focused library such as `swift-crypto`, the `swift-log` facade, or the organization's shared identity contract. What Core must not link is an infrastructure SDK: a database driver, an HTTP client, a mail or payments provider, a server framework, a concrete logging backend.
+
+A third-party SDK is what earns a `<Service><Technology>` target; conforming to a Core protocol does not. Keep those targets leaves that only the composition root depends on. Core is the root of the internal graph, so a mail SDK there makes `<Service>Postgres` link an HTTP client to run SQL, and an email-template edit recompiles every target.
+
+## Policies, configuration, and injection
 
 Business rules that need no SDK stay in Core as plain structs — never protocols, never injected:
 
@@ -44,27 +45,25 @@ Name a rule expressed as numbers `XPolicy`, not `XConfiguration`. Configuration 
 
 Do not inject a concrete struct that has no protocol: injection buys substitution, and a concrete type cannot be substituted. Either the seam is real and the parameter is a protocol, or the type is constructed where it is used.
 
-Duplicate the `Database`, `PostgresContext`, `PostgresDatabase`, configuration, and composition skeletons in each service rather than extracting a shared foundation package. The shapes start identical but are service-owned: contexts, database wrappers, and configuration diverge as services evolve, and a shared package would couple independent releases. Do not introduce a shared `<organization>-kit` unless the user explicitly asks for one.
+## Duplicate the small shapes
+
+Duplicate the `Database`, `PostgresContext`, `PostgresDatabase`, configuration, transport-security, and composition skeletons in each service rather than extracting a shared foundation package. The shapes start identical but are service-owned: contexts, database wrappers, and configuration diverge as services evolve, and a shared package couples independent releases — every change costs a tag and a bump in every consumer. The only shared packages are the proto contracts and the identity package, and both are consumed by tag. Do not introduce an `<organization>-kit` unless the user explicitly asks for one.
 
 ## Naming grammar
 
-- Service package: `<organization>-<service>` or the repository's established lowercase service naming pattern.
-- Executable product: lowercase service name, such as `catalog`.
-- Internal targets: `CatalogCore`, `CatalogPostgres`, `CatalogGRPC`, `Catalog`.
+- Service package: `<organization>-<service>`, lowercase.
+- Executable product: the lowercase service name, such as `catalog`.
+- Internal targets: `CatalogCore`, `CatalogPostgres`, `CatalogGRPC`, `Catalog`. Targets do not repeat the organization prefix; the package name carries it.
 - Optional Temporal target: `CatalogWorkflows`.
 - Provider adapter target: `CatalogBcrypt`, `CatalogResend` — the technology, not the port it implements.
 - Business rule value: `PasswordPolicy`, `SessionPolicy`, `EmailValidator`.
 - Entity: `Item`.
-- Use case: `CreateItemUseCase`.
-- Use-case port: `CreateItemUseCaseProtocol`.
-- Input and typed failure: `CreateItemUseCaseInput`, `CreateItemUseCaseError`.
-- Narrow context: `CreateItemUseCaseContext`.
-- Repository: `ItemRepository`, `ItemRepositoryError`.
-- Write intent passed to a repository: `CreateItemCommand`.
-- Postgres implementation: `PostgresItemRepository`.
-- Prepared statement: `CreateItemStatement`.
+- Use case: `CreateItemUseCase`; port `CreateItemUseCaseProtocol`; input and typed failure `CreateItemUseCaseInput`, `CreateItemUseCaseError`; narrow context `CreateItemUseCaseContext`.
+- Repository: `ItemRepository`, `ItemRepositoryError`; write intent `CreateItemCommand`.
+- Postgres implementation: `PostgresItemRepository`; prepared statement `CreateItemStatement`.
 - gRPC service implementation: `ItemService`.
 - Temporal workflow, Activities, and client adapter: `ReservationWorkflow`, `ReservationActivities`, `TemporalReservationWorkflowClient`.
+- Identifier properties: `xId`, never `xID`. Strict camel case keeps `registrationId` aligned with SQL `registration_id` and proto `registration_id` with no acronym special-casing.
 
 Do not replace these with handlers, interactors, gateways, stores, managers, `Domain`, `Application`, `Infrastructure`, generic `Mappings`, or generic `Adapters` unless the user explicitly changes the vocabulary.
 
@@ -77,30 +76,30 @@ Use protocols where they enable a real seam:
 - Per-use-case context protocols expose only the repositories a use case needs.
 - `Database` lets the use case select connection versus transaction semantics while keeping Core decoupled from persistence.
 - Workflow-client protocols let Core start, signal, and query durable orchestration without importing Temporal.
-- Activity service protocols let the Workflows target invoke Core-owned application behavior without importing Postgres, gRPC, email, or provider SDKs.
+- Activity service protocols let the Workflows target invoke Core-owned behavior without importing Postgres, gRPC, or provider SDKs.
 
 Do not add a protocol merely to mirror every concrete type. Keep entities and command values as structs. Keep configuration and composition concrete at the executable root.
 
-Use typed errors in Core. Map persistence-specific failures into repository errors in persistence, repository errors into use-case errors in Core, and use-case errors into RPC status in gRPC. Reverse that translation at the consumer boundary. Never make Core switch on SQLSTATE or `RPCError`.
+Use typed errors in Core. Map persistence failures into repository errors in persistence, repository errors into use-case errors in Core, and use-case errors into RPC status in gRPC. Reverse that translation at the consumer boundary. Never make Core switch on SQLSTATE or `RPCError`.
 
-Translate an error only where the translation carries information. A one-case adapter enum every failure funnels into — `catch { throw XClientError.unavailable }` — destroys the cause without adding a distinction, so a permanent misconfiguration reports as a retryable outage and the caller retries what can never succeed. Let the infrastructure error propagate and classify it where the difference is actionable. Name a repository error for the constraint that exists: a partial unique index over active states means "an active record exists," not "duplicate email."
+Translate an error only where the translation carries information. A one-case adapter enum every failure funnels into — `catch { throw XClientError.unavailable }` — destroys the cause without adding a distinction, so a permanent misconfiguration reports as a retryable outage and the caller retries what can never succeed. Let the infrastructure error propagate and classify it where the difference is actionable. Name a repository error for the constraint that exists: a partial unique index over active states means "an active record exists", not "duplicate email".
 
 ## Ownership rules
 
-An extracted service owns:
+A service owns:
 
 - its business behavior;
 - its canonical RPC surface;
 - its database and migrations;
-- its persistence timestamps and constraints;
+- its persistence timestamps, identifiers, and constraints;
 - its runtime and deployment lifecycle.
 
 The database that owns an entity also owns generation of that entity's identifier. Define UUID primary keys with `DEFAULT uuidv7()`, omit them from create commands and create RPC requests, and return the inserted entity with its generated identifier. A caller may provide a separate idempotency key when required, but it must not masquerade as the owned entity identifier. Treat the key as an opaque request identity, not a secret or authorization credential; the receiving service owns atomic enforcement and payload-conflict detection.
 
 When one service creates an entity through another service, keep the caller's pending state under a caller-owned identifier. Store the foreign identifier only after the owning service returns it. Never preallocate an identifier in the caller, pass it into the owner, or create a matching identifier independently in two databases.
 
-The monolith or another consumer owns its local API-facing model and use-case protocol. Generated protobuf messages are integration DTOs, not shared domain entities.
+A consumer owns its local caller-facing model and use-case protocol. Generated protobuf messages are integration DTOs, not shared domain entities.
 
-Do not share a database, query another service's tables, or make a distributed transaction. Add an RPC for synchronous coordination. Introduce asynchronous events/outbox only when delivery and consistency requirements justify it; do not add them speculatively.
+Do not share a database, query another service's tables, or make a distributed transaction. Add an RPC for synchronous coordination. Introduce asynchronous events or an outbox only when delivery and consistency requirements justify it; do not add them speculatively.
 
-When Temporal coordinates a capability, keep orchestration mechanics in `<Service>Workflows` and business/persistence state in Core and Postgres. Do not mirror Temporal history in a second workflow-state infrastructure or poll Postgres to reconstruct running workflows by default. See [temporal-workflows.md](temporal-workflows.md).
+When Temporal coordinates a capability, keep orchestration mechanics in `<Service>Workflows` and business/persistence state in Core and Postgres. Do not mirror Temporal history in a second workflow-state store or poll Postgres to reconstruct running workflows. See [temporal-workflows.md](temporal-workflows.md).

@@ -1,4 +1,4 @@
-# Distributed-system design and greenfield workflow
+# Distributed-system design
 
 Use this reference when designing more than one service, introducing a remote dependency, or creating a system from scratch.
 
@@ -51,7 +51,7 @@ Choose the least complex mechanism that satisfies the interaction:
 
 Do not turn a local function graph into a chain of RPCs without revisiting the boundary. Avoid chatty protocols; expose capability-level operations and return the data needed to complete the caller's step.
 
-Use gRPC as the default synchronous internal transport in this skill. Introduce a broker or workflow engine only from explicit delivery/durability requirements, not because the system has multiple services.
+gRPC is the default synchronous internal transport. Introduce a broker or workflow engine only from explicit delivery/durability requirements, not because the system has multiple services.
 
 ## Contracts and compatibility
 
@@ -114,31 +114,30 @@ For mutations, define a request identity when clients may retry after an ambiguo
 
 Identify public, private, administrative, and data-sensitive boundaries. Keep internal service ports off the public ingress by default.
 
-- Terminate public TLS at the platform ingress.
+- Terminate public TLS at the platform ingress or the gateway's sidecar.
 - Mutually authenticate every internal gRPC connection with the stack's own CA; a process is its certificate, and there is no plaintext mode. Keep authorization at the token layer — the certificate says a peer belongs to the stack, the token says who is calling.
-- Authenticate callers at the appropriate edge and propagate only required identity/claims.
+- Authenticate callers at the edge and propagate only required identity claims.
 - Authorize inside the service that owns the protected capability.
-- Keep secrets in the deployment secret provider or environment injection, never source control.
+- Model process identity separately from end-user identity; do not trust a caller merely because it is on an internal network.
+- Keep secrets as mounted files configured by path, never in source control or environment variables.
 - Mark secret configuration values with `isSecret: true`.
 - Avoid logging tokens, credentials, sensitive payloads, or raw database errors.
-- Apply least-privilege database users and network policies in production.
+- Connect as a least-privilege database role; confine caller-owned rows with policies.
 
-Model service identity separately from end-user identity. Do not trust a caller merely because it is on an internal network.
-
-See [identity-and-access.md](identity-and-access.md) for how a caller is signed, verified, identified per transport, and forwarded between services.
+See [identity-and-access.md](identity-and-access.md) for how a caller is signed, verified, identified per transport, and forwarded between services, and [persistence.md](persistence.md) for the service role and row-level security.
 
 ## Observability and operations
 
 Establish consistent signals across services:
 
-- structured logs with service label, operation/RPC, outcome, and correlation or trace identifiers;
+- structured logs with a service label, operation/RPC, outcome, and correlation or trace identifiers;
 - request rate, error rate, and latency for inbound and outbound RPCs;
 - Postgres pool/query health and migration status;
 - saturation indicators such as concurrency, queue depth, and resource exhaustion;
 - distributed traces across remote boundaries when the operating stack supports them;
 - deployment version and contract version visibility.
 
-Do not log in Core by default. Instrument executable, transport, and infrastructure boundaries. Keep error messages safe for clients while retaining diagnostic context in internal logs. Ship logs to one aggregator so a single query spans services: each process pushes to Grafana Loki in process (a `LokiLogProcessor` multiplexed with stdout, no scraping agent), each line carries a `service` label (the Loki handler's `service:`) and its logger label, with a request or correlation id as metadata. [composition.md](composition.md) has the bootstrap; [environment.md](environment.md) has Loki and Grafana.
+Log domain events in use cases through the `swift-log` facade ([core.md](core.md)), and request, transport, and infrastructure events at the executable and transport boundaries. Keep error messages safe for clients while retaining diagnostic context in internal logs. Ship logs to one aggregator so a single query spans services: each process pushes in-process (no scraping agent), each line carries a `service` label and its logger label, with a request or correlation id as metadata. [composition.md](composition.md) has the bootstrap; [environment.md](environment.md) has the aggregator.
 
 Use graceful shutdown signals and lifecycle management. Stop accepting work, allow bounded in-flight completion, close clients/servers, and make restart behavior safe. Run migrations as a one-shot deployment step before starting a service version that requires them.
 
@@ -149,11 +148,11 @@ Define alerts from user-impacting symptoms and service objectives, not every log
 1. Write the capability map, service ownership table, interaction map, and non-functional requirements.
 2. Challenge every proposed remote boundary; merge services that lack independent ownership or operating value.
 3. Define the first vertical user journey and the contracts it needs.
-4. Create and release the shared proto package.
+4. Create and release the shared proto and identity packages.
 5. Initialize each required SwiftPM service package with `swift package init --type executable`.
-6. Build the owning service from Core outward through Postgres, gRPC, composition, and deployment.
+6. Build the owning service from Core outward through Postgres, gRPC, composition, and environment.
 7. Build consumers against their local use-case protocols and generated clients.
-8. Add dedicated databases, migration jobs, private networking, secrets, lifecycle, and observability.
+8. Add dedicated databases, migration jobs, private networking, certificates, secrets, lifecycle, and observability.
 9. Verify the first journey end to end, including dependency failure and retry/idempotency behavior.
 10. Add the next vertical capability; do not scaffold unused services or infrastructure in advance.
 
