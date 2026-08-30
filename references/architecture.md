@@ -31,9 +31,13 @@ Dependencies point inward. Core has no dependency on another service's implement
 
 A third-party SDK is what earns a `<Service><Technology>` target; conforming to a Core protocol does not. Keep those targets leaves that only the composition root depends on. Core is the root of the internal graph, so a mail SDK there makes `<Service>Postgres` link an HTTP client to run SQL, and an email-template edit recompiles every target.
 
-## Policies, configuration, and injection
+## Business rules, policies, and adapters
 
-Business rules that need no SDK stay in Core as plain structs — never protocols, never injected:
+A business rule lives in the use case that applies it. A fixed invariant — a title must not be blank, a currency is three letters, a licence names a major version and a subscription does not — is a `guard` at the top of `callAsFunction`, before any I/O, throwing the use case's own typed error. Do not extract those guards into an `XValidator` whose errors then need an initializer on every use-case error to map them back; the mapping is code that says nothing. When the same invariant applies on create and on update, both use cases state it, and a rule that depends on the row's existing state is applied inside the transaction that reads the row.
+
+An adapter carries no rule. A `<Service><Technology>` target translates one Core call into one SDK call and the SDK's result and errors back into Core values; it does not decide whether a trial is offered, whether a message should be sent, or whether a caller qualifies. The use case makes that decision from the entities it already holds and hands the adapter a plain value — a `trialPeriodDays: Int?` that is `nil` when there is no trial, not a `trialEligible` flag and a `requestTrial` flag for the adapter to combine. The same holds for a repository: SQL states constraints and guards transitions in `WHERE`, but a decision that reads as product policy belongs above it.
+
+A rule that carries product-set values — a minimum length, a lifetime — is a plain struct in Core, never a protocol, never injected:
 
 ```swift
 package struct PasswordPolicy: Equatable, Sendable {

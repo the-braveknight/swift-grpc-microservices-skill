@@ -109,18 +109,25 @@ package struct CreateItemUseCase<DatabaseType>: CreateItemUseCaseProtocol where 
             logger.warning("Item create rejected: duplicate name", metadata: ["name": "\(input.name)"])
             throw .duplicateName
         } catch {
+            logger.warning("Item create failed: unknown error", metadata: ["name": "\(input.name)", "error": "\(String(reflecting: error))"])
             throw .unknown
         }
     }
 }
 ```
 
-Do not pass `Date`, a clock, or a `now` closure into a use case merely to stamp a record. The repository — in practice the database default — owns that persistence concern.
+The guards are the use case's business rules, stated where they apply; see *Business rules, policies, and adapters* in [architecture.md](architecture.md). Build the command inside the closure and execute it on the next line rather than nesting the construction in the call.
 
-Business rules a use case applies — a password policy, a session lifetime, an email validator — are plain structs constructed in the composition root and passed in by value. See *Policies, configuration, and injection* in [architecture.md](architecture.md).
+An input carries a value in the type the transport already validated it into: a caller's id parsed from the credential arrives as a `UUID`, an enum as the enum, so the use case does not re-parse it and has no `invalidUserID` to throw. A value the wire still carries as a string — a target user's id in a request body — is parsed by the use case, which owns that error.
+
+When a lookup inside a transaction finds nothing, throw the use case's own typed error from inside the closure and rethrow it by type outside — `catch let error as CreateItemUseCaseError { throw error }` — before the named repository errors and the catch-all. Do not return an optional from the closure and unwrap it afterwards, and do not invent a private sentinel error to carry the refusal out of the closure.
+
+Do not pass `Date`, a clock, or a `now` closure into a use case merely to stamp a record. The repository — in practice the database default — owns that persistence concern.
 
 ## Logging in use cases
 
-Inject a `Logger` into every use case that performs a meaningful mutation or has a notable failure branch, and log the domain event at the boundary: `info` on the success path (after the write commits, before returning), `warning` on a known refusal (not found, duplicate, rejected), `error` only for a genuine failure. Attach the identifiers that make a line searchable as metadata — `itemId`, `userId`, a correlation id — and never a secret, a token, or a full payload. A pure list/get use case takes no logger unless it warns on not-found.
+Inject a `Logger` into every use case and log the domain event at the boundary: `info` on the success path (after the write commits, before returning), `warning` on a known refusal (not found, duplicate, rejected), `error` only for a genuine failure. Attach the identifiers that make a line searchable as metadata — `itemId`, `userId`, a correlation id — and never a secret, a token, or a full payload.
+
+The catch-all that maps to `.unknown` always logs, with the cause as `"error": "\(String(reflecting: error))"` beside the identifiers. It is the last place the original error is visible: after it, the caller sees an `internalError` status and nothing else. That is why a pure list or get use case takes a logger too — its only failure branch is the one that would otherwise vanish.
 
 This is the `swift-log` facade, which Core may link. The concrete handlers are bootstrapped only in the composition root ([composition.md](composition.md)), which passes its `logger` into each use case's initializer.

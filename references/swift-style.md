@@ -34,7 +34,9 @@ Order imports alphabetically by module name after any conditional Foundation blo
 - Indent with four spaces; never tabs in Swift.
 - One declaration per file, except tiny, tightly related conversion extensions.
 - Trailing commas in multiline arrays and manifest dependency lists where the surrounding file does.
-- Break multiline initializers one argument per line.
+- Break multiline initializers one argument per line; break a signature with more than three parameters one parameter per line, with the closing parenthesis and return type on their own line.
+- Build a command or statement into a named local, then execute it on the next line: `let statement = GetItemStatement(id: id)` then `connection.execute(statement, logger: logger)`. Collect a multi-row result with `try await Array(result)`.
+- Write SQL longer than one clause as a multi-line string literal, one clause per line.
 - Opening brace on the declaration line.
 - Keep a type declaration and its qualified protocol conformances on one line; do not split the protocol name or put the opening brace on a separate line.
 - A single blank line between logical blocks and declarations.
@@ -67,7 +69,7 @@ Do not use `T : Sendable` or move the constraint to a trailing `where` unless th
 - Use `callAsFunction` for use cases, with the `input:` label: `useCase(input: input)`.
 - Use typed throws for Core use-case protocols and implementations.
 - Catch named enum cases directly: `catch ItemRepositoryError.duplicateName`.
-- End with a deliberate catch-all mapping when the public typed error includes `.unknown`.
+- End with a deliberate catch-all mapping when the public typed error includes `.unknown`, and log the cause there with `String(reflecting:)`.
 - Log through the `swift-log` facade only: domain events in use cases (see [core.md](core.md)), request and infrastructure events at transport and composition boundaries. Never construct a log handler outside the composition root.
 
 ## Formatting verification
