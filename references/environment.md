@@ -12,6 +12,7 @@ the environment lives here; the other references describe the code and say only 
 - Postgres and migrations
 - Ports
 - Secrets and the staged first start
+- Transport security: the certificate volume
 - The gateway's address: a tailnet sidecar
 - Log aggregation: Loki and Grafana
 - Verifying what a service receives
@@ -183,6 +184,84 @@ signed by the old key stop verifying and clients recover on their next refresh, 
 tokens are database rows rather than signed tokens. Rotating a service credential is deleting its
 row and issuing another; the old token stops working within its lifetime.
 
+## Transport security: the certificate volume
+
+Every gRPC connection in the stack is mutually authenticated — service to service, and every
+client of the Temporal frontend. The certificates are the one piece of key material that is
+not a host file: a one-shot service issues them into a named volume on the first `up`, so a
+platform that runs the Compose file as-is gets them with no host-side step, and losing the
+volume costs one regeneration and a restart, because nothing outside the stack trusts the CA.
+
+```yaml
+configs:
+  generate-tls:
+    file: ./scripts/generate-tls.sh
+
+volumes:
+  tls-certs:
+
+x-tls: &tls
+  TLS_CERTIFICATE_PATH: /run/tls/cert.pem
+  TLS_PRIVATE_KEY_PATH: /run/tls/key.pem
+  TLS_TRUST_ROOTS_PATH: /run/tls/ca.pem
+
+services:
+  tls-init:
+    image: smallstep/step-cli:0.30.6
+    user: root                       # the volume is created root-owned
+    configs:
+      - source: generate-tls
+        target: /generate-tls.sh
+    volumes:
+      - tls-certs:/tls               # the only read-write mount of the volume
+    entrypoint: ["/bin/sh", "/generate-tls.sh", "/tls"]
+    restart: "no"
+
+  billing:
+    environment:
+      <<: [*postgres-connection, *jwt-verification, *tls]
+    volumes:
+      - type: volume
+        source: tls-certs
+        target: /run/tls
+        read_only: true
+        volume:
+          subpath: billing           # its own leaf and the CA, nothing else
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+```
+
+The script is `step` and nothing else: one CA (`--profile root-ca`, EC P-256, ten years), then
+one leaf per process in a fixed list — every service, every worker, the gateway, the Temporal
+server, its UI and its CLI — with `--san <service-name> --san localhost --san 127.0.0.1`,
+`--not-after 8760h`, and step's default leaf usage, which is both server and client
+authentication because a process presents the same certificate in both directions. The SAN is
+the Compose service name because that is what every client dials and verifies. Each leaf
+directory also gets a copy of the CA certificate, so a process mounts one directory. The script
+skips whatever exists, so every later `up` is a no-op; `TLS_ROTATE=leaves` or `=all` reissues,
+followed by `docker compose up -d --force-recreate` — the same restart-to-rotate rule as the
+signing key. Files are `0644` and `ca/ca.key` is `0600`: isolation is by mount, not by mode,
+because the Temporal images run as their own users. `subpath` needs Docker Engine 26 / Compose
+2.24 or later.
+
+The Temporal server reads the same volume through its own variables —
+`TEMPORAL_TLS_SERVER_CERT/KEY`, `TEMPORAL_TLS_SERVER_CA_CERT`, `TEMPORAL_TLS_FRONTEND_CERT/KEY`,
+`TEMPORAL_TLS_CLIENT1_CA_CERT`, `TEMPORAL_TLS_REQUIRE_CLIENT_AUTH: "true"`, and
+`TEMPORAL_TLS_INTERNODE_SERVER_NAME` / `TEMPORAL_TLS_FRONTEND_SERVER_NAME` set to its service
+name — the UI through `TEMPORAL_TLS_CA/CERT/KEY`, `TEMPORAL_TLS_SERVER_NAME` and
+`TEMPORAL_TLS_ENABLE_HOST_VERIFICATION`, and the namespace-creation CLI through
+`--tls-cert-path`, `--tls-key-path`, `--tls-ca-path` and `--tls-server-name` flags. The Swift
+`TemporalClient` and `TemporalWorker` take the same client factory as every `GRPCClient`.
+
+There is no plaintext mode and no mode variable. The images and the Compose file move together:
+an image that predates the factories against this file, or the reverse, breaks every call at
+once, because the Temporal frontend starts requiring client certificates the moment the file
+lands. A process started outside Compose runs the script into a directory of its own and sets
+the three paths. Probing a live server needs a leaf too —
+`grpcurl -cacert ca.pem -cert cert.pem -key key.pem` with any process's directory mounted from
+the volume — and a plaintext dial, or a certificate from another CA, is refused at the handshake.
+
 ## The gateway's address: a tailnet sidecar
 
 The gateway publishes no host port. A Tailscale sidecar owns its address — node identity,
@@ -293,7 +372,7 @@ and a request through the public hostname from a machine on the tailnet.
 
 ## Platforms without Compose secrets
 
-The equivalent of a secret is a file mount plus the path variable. Most such platforms deploy a
+The equivalent of a secret is a file mount plus the path variable. The certificate volume is unaffected: it is created and filled by the Compose file itself. Most such platforms deploy a
 container whose mount is missing rather than refusing, so the failure appears in the logs as an
 unreadable key instead of a failed deploy — check them after the first rollout rather than reading
 a green deploy as proof the mount landed.

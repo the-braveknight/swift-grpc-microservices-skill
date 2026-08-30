@@ -86,9 +86,10 @@ Do not leave the old Postgres database/context variable in composition once no l
 4. Add `<service>`, gated on successful migration and available only on the internal network.
 5. Add consumer `GRPC_<SERVICE>_HOST` and `_PORT` using the producer's name on the internal network.
 6. Add a consumer dependency on the service for startup ordering.
+6a. Add the service to the certificate script's process list, merge `*tls`, mount its own subdirectory of the certificate volume read-only, and gate it on `tls-init` ([environment.md](environment.md)).
 7. Render and validate the environment ([environment.md](environment.md)) and verify image names and commands.
 
-On a managed container platform or any other ingress, expose only the public HTTP edge. Keep gRPC service-to-service traffic private. Use platform TLS at the edge; revisit mTLS only when the threat model requires it.
+On a managed container platform or any other ingress, expose only the public HTTP edge. gRPC service-to-service traffic stays private and mutually authenticated; the certificate volume is created by the same Compose file, so a platform that runs it needs no host-side step.
 
 ## 7. Move data and cut over
 

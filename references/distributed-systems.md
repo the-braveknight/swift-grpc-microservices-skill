@@ -115,7 +115,7 @@ For mutations, define a request identity when clients may retry after an ambiguo
 Identify public, private, administrative, and data-sensitive boundaries. Keep internal service ports off the public ingress by default.
 
 - Terminate public TLS at the platform ingress.
-- Use service TLS or mTLS when the network is not sufficiently trusted or workload identity is required.
+- Mutually authenticate every internal gRPC connection with the stack's own CA; a process is its certificate, and there is no plaintext mode. Keep authorization at the token layer — the certificate says a peer belongs to the stack, the token says who is calling.
 - Authenticate callers at the appropriate edge and propagate only required identity/claims.
 - Authorize inside the service that owns the protected capability.
 - Keep secrets in the deployment secret provider or environment injection, never source control.

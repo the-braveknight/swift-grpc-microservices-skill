@@ -117,7 +117,13 @@ LoggingSystem.bootstrap { label in
 let logger = Logger(label: "catalog")
 ```
 
-Under Infrastructure, construct one `PostgresClient`. Under Composition, construct `PostgresDatabase<Postgres<Service>Context>`, use cases, and gRPC service implementations. Under gRPC, construct one server:
+Under Infrastructure, construct one `PostgresClient` and scope the transport-security reader:
+
+```swift
+let tlsConfig = config.scoped(to: "tls")
+```
+
+Under Composition, construct `PostgresDatabase<Postgres<Service>Context>`, use cases, and gRPC service implementations. Under gRPC, construct one server:
 
 ```swift
 let serverConfig = config.scoped(to: "grpc.server")
@@ -126,7 +132,7 @@ let port = serverConfig.int(forKey: "port", default: 50051)
 let server = GRPCServer(
     transport: .http2NIOPosix(
         address: .ipv4(host: host, port: port),
-        transportSecurity: .plaintext
+        transportSecurity: try .mTLS(config: tlsConfig)
     ),
     services: [itemService]
 )
@@ -146,7 +152,42 @@ let serviceGroup = ServiceGroup(
 )
 ```
 
-Use plaintext on the private Docker/platform network when ingress terminates TLS. Add end-to-end or mutual TLS only when the deployment trust model requires it.
+Every connection is mutually authenticated, in both directions, with the one leaf certificate the process was issued (see *Transport security* in environment.md). The factories live in the executable's `Configuration` folder as `TransportSecurity+ConfigReader.swift`, one per direction, on grpc-swift's own types — so a call site reads exactly like the library's `.plaintext` did, and there is no struct to carry two values and no mode to switch:
+
+```swift
+extension HTTP2ServerTransport.Posix.TransportSecurity {
+    /// A server cannot know a client's hostname, so it checks only that the client's certificate
+    /// chains to the CA — grpc's default for mTLS.
+    static func mTLS(config: ConfigReader) throws -> Self {
+        let certificateChain: [TLSConfig.CertificateSource] = [
+            .file(path: try config.requiredString(forKey: "certificatePath"), format: .pem)
+        ]
+        let privateKey: TLSConfig.PrivateKeySource = .file(
+            path: try config.requiredString(forKey: "privateKeyPath"),
+            format: .pem
+        )
+        let trustRoots: TLSConfig.TrustRootsSource = .certificates([
+            .file(path: try config.requiredString(forKey: "trustRootsPath"), format: .pem)
+        ])
+        return .mTLS(certificateChain: certificateChain, privateKey: privateKey) { tls in
+            tls.trustRoots = trustRoots
+        }
+    }
+}
+
+extension HTTP2ClientTransport.Posix.TransportSecurity {
+    /// A client knows exactly whom it dialled, so it checks the name as well as the chain.
+    static func mTLS(config: ConfigReader) throws -> Self {
+        // the same three sources
+        return .mTLS(certificateChain: certificateChain, privateKey: privateKey) { tls in
+            tls.trustRoots = trustRoots
+            tls.serverCertificateVerification = .fullVerification
+        }
+    }
+}
+```
+
+The reader is scoped to `tls`, so the operator sets `TLS_CERTIFICATE_PATH`, `TLS_PRIVATE_KEY_PATH` and `TLS_TRUST_ROOTS_PATH` — paths, like the signing key, because that is the form NIOSSL takes credentials in and it keeps a private key out of the environment. A missing one fails at startup naming the key. Every `GRPCClient`, the `TemporalClient` and the `TemporalWorker` take the client factory; the `GRPCServer` takes the server one. Do not share the file through the identity package: the shape is eight lines a service owns, and a shared package change costs a tag and a bump in every consumer.
 
 When the service uses Temporal, construct one long-lived `TemporalClient` in `serve`, inject a `<Feature>WorkflowClient` adapter into Core use cases, and include the client in `ServiceGroup`. Do not run workflow definitions or Activity implementations in the gRPC server process.
 
@@ -167,7 +208,7 @@ let temporalWorker = try TemporalWorker(
         host: temporalHost,
         port: temporalConfig.int(forKey: "port", default: 7233)
     ),
-    transportSecurity: .plaintext,
+    transportSecurity: try .mTLS(config: tlsConfig),
     activityContainers: ReservationActivities(service: activityService),
     workflows: [ReservationWorkflow.self],
     logger: logger

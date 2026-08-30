@@ -459,8 +459,8 @@ Give each configuration an `init(config:)` in the executable's `Configuration` f
 
 A path is what the surrounding libraries already take. `TLSConfig.CertificateSource.file(path:format:)`
 and `PrivateKeySource.file(path:format:)` in grpc-swift, and `NIOSSLCertificate.fromPEMFile` in
-NIOSSL, are handed a path and open it themselves, so the mTLS material a service needs next is
-configured exactly like the signing key it needs now. Nothing about a path resists an environment
+NIOSSL, are handed a path and open it themselves, so the mTLS leaf every service presents is
+configured exactly like the signing key — the same folder, the same `+ConfigReader` file shape. Nothing about a path resists an environment
 variable, which is the whole reason the document used to be encoded.
 
 It matters most for a private key. An environment variable is readable from `/proc/<pid>/environ`,

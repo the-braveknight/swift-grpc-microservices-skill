@@ -345,6 +345,7 @@ reports a misconfiguration as a connection failure minutes later, at the first r
 of at startup.
 
 ```swift
+let tlsConfig = config.scoped(to: "tls")
 let usersConfig = config.scoped(to: "grpc.users")
 let usersClient = GRPCClient(
     transport: try .http2NIOPosix(
@@ -352,7 +353,7 @@ let usersClient = GRPCClient(
             host: try usersConfig.requiredString(forKey: "host"),
             port: try usersConfig.requiredInt(forKey: "port")
         ),
-        transportSecurity: .plaintext
+        transportSecurity: try .mTLS(config: tlsConfig)
     ),
     interceptors: [IdentityClientInterceptor()]
 )
@@ -391,9 +392,10 @@ extension IdentityVerifier.Configuration {
 
 A path is the form the surrounding libraries already take. `TLSConfig.CertificateSource.file(path:format:)`
 and `PrivateKeySource.file(path:format:)` in grpc-swift, and `NIOSSLCertificate.fromPEMFile` in
-NIOSSL, are given a path and open it themselves — so the mTLS credentials a gateway is most
-likely to need next are configured exactly like the key it needs now, and none of that material
-becomes a configuration value an access reporter can write to a log.
+NIOSSL, are given a path and open it themselves — so the gateway's own mTLS leaf, which it
+presents to every service it calls, is configured exactly like the key it verifies with (see
+*Transport security* in environment.md and the client factory in composition.md), and none of
+that material becomes a configuration value an access reporter can write to a log.
 
 It also removes the reason the document was ever base64 encoded: a path survives an environment
 variable intact where a PEM's newlines do not. This is the same rule the services behind the
