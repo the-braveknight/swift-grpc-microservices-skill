@@ -17,8 +17,8 @@ Name the executable target after the service, not `<Service>Server`. Make the ro
 ```text
 catalog                          # defaults to serve
 catalog serve
-catalog worker                   # only when the service uses Temporal
 catalog database migrate
+catalog-worker                   # only with Temporal — a second executable, one command
 catalog service-credentials create --id <name>   # only on the authenticating service
 ```
 
@@ -30,7 +30,6 @@ struct Catalog: AsyncParsableCommand {
         abstract: "Catalog Service",
         subcommands: [
             Serve.self,
-            Worker.self,
             Database.self
         ],
         defaultSubcommand: Serve.self
@@ -224,7 +223,28 @@ Keep the two concerns in two scopes: `tls` is who the process is inside the stac
 
 ## Temporal worker composition root
 
-Run Temporal execution from the executable's `Worker.self` subcommand, registered beside `Serve.self` and `Database.self`. Follow the same section order as `serve`.
+The worker is its own executable target, `<Service>Worker`, with product `<service>-worker`, in the same package. Its `@main` is a single `AsyncParsableCommand`, `Worker` in `Worker.swift`, named `<service>-worker` on the command line, whose `run()` is the composition root, in the same section order as `serve`. It has its own `Configuration/` folder holding copies of the `+ConfigReader` extensions it reads — transport security, the log shipper, the service credential, a provider client — and none for Postgres, because it links none:
+
+```swift
+@main
+struct Worker: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "catalog-worker",
+        abstract: "Catalog Worker"
+    )
+
+    func run() async throws {
+        // MARK: - Configuration
+        // MARK: - Logging
+        // MARK: - Infrastructure
+        // MARK: - Composition
+        // MARK: - Worker
+        // MARK: - Lifecycle
+    }
+}
+```
+
+It builds to its own image, `<organization>-<service>-worker`, from the same `Makefile` and the same `.build`; deploy it at the same tag as the service, because it speaks the service's own worker-facing contract.
 
 The worker owns no database (see *Worker composition* in [temporal-workflows.md](temporal-workflows.md)). Under Infrastructure, construct the long-lived gRPC and provider clients its Activities call. Under Composition, build the concrete Core Activity service over those clients. Then create one `TemporalWorker`:
 

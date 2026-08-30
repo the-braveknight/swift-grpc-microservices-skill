@@ -34,7 +34,7 @@ build:
 .PHONY: build
 ```
 
-Replace only service, product, and repository names. The image's creation dates are the epoch, so image age says nothing about freshness; probe a feature (`--help` listing a subcommand) instead.
+Replace only service, product, and repository names. A service with a Temporal worker has a second `build-<service>-worker` target for `--product <service>-worker` into `<organization>-<service>-worker`, and `build` depends on both; the two share one `.build`. The image's creation dates are the epoch, so image age says nothing about freshness; probe a feature (`--help` listing a subcommand) instead.
 
 ## The suite Compose file
 
@@ -73,7 +73,7 @@ Per service:
 
 - `<service>-migrate`: the service image with `command: ["database", "migrate"]`, gated on `postgres-init`, connecting as the owner and carrying `POSTGRES_SERVICE_ROLE` / `POSTGRES_SERVICE_PASSWORD` for its first migration to create;
 - `<service>`: `command: ["serve"]`, gated on the migration job, connecting **as the service role** by overriding the anchor's credentials;
-- `<service>-worker`: the same image with `command: ["worker"]` when the service uses Temporal, with the service clients, credential, and Temporal configuration its Activities need — and no database.
+- `<service>-worker`: its own image, `<organization>-<service>-worker`, at the same tag as the service, when the service uses Temporal — with the service clients, credential, and Temporal configuration its Activities need, and no Postgres variables at all. No `command:` — the image has one.
 
 ```yaml
 <service>-migrate:

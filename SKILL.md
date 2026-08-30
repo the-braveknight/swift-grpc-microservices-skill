@@ -48,7 +48,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 
 ### Package, targets, and naming
 
-1. Name targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`; add `<Service>Workflows` only with Temporal and one `<Service><Technology>` leaf per third-party provider SDK. Never `Domain`, `Application`, `Infrastructure`, `Mappings`, or `Adapters`.
+1. Name targets `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, and `<Service>`; add `<Service>Workflows` and the `<Service>Worker` executable only with Temporal, and one `<Service><Technology>` leaf per third-party provider SDK. Never `Domain`, `Application`, `Infrastructure`, `Mappings`, or `Adapters`.
 2. Use `XUseCase`, `XUseCaseProtocol`, `XUseCaseInput`, `XUseCaseError`, `XUseCaseContext`, `XRepository`, `XRepositoryError`, `XCommand`, `XPolicy`, `XValidator`, `XStatement`, `PostgresXRepository`, `XService`, `XWorkflow`, `XActivities`, `TemporalXWorkflowClient`.
 3. Keep Core independently buildable. It may link `swift-crypto`, the `swift-log` facade, or the shared identity package; never Postgres, gRPC, protobuf, a logging backend, configuration, a provider SDK, or a server framework.
 4. Give every target its direct dependencies in `Package.swift`; never rely on transitive imports. Use `package` access between targets of one package; `public` only from separately consumed packages.
@@ -88,7 +88,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 
 ### Composition and configuration
 
-29. Name the executable after the service. `serve` is the default subcommand; `database migrate` is nested; `worker` exists only with Temporal.
+29. Name the executable after the service. `serve` is the default subcommand; `database migrate` is nested; operator commands are subcommands. A Temporal worker is not a subcommand: it is a second executable target `<Service>Worker`, product `<service>-worker`, image `<organization>-<service>-worker`, in the same package, with its own composition root and its own copies of the configuration extensions it needs.
 30. Construct every long-lived client, server, and worker once in the composition root, under `// MARK:` sections in the order Configuration, Logging, Infrastructure, Composition, Transport, Lifecycle, and own all of them with one `ServiceGroup` with graceful shutdown.
 31. Read configuration with `ConfigReader` scoped by concern (`postgres`, `grpc.server`, `grpc.<upstream>`, `tls`, `jwt`, `temporal`, `loki`). Require infrastructure values and secrets; default only listen address, port, and log level. Require upstream hosts and ports rather than defaulting to `localhost`.
 32. Give each configuration an `init(config:)` extension in the executable's `Configuration` folder. Configure key material by path and open the file there, failing loudly naming both the key and the path.
@@ -117,7 +117,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 46. Keep Workflow code deterministic and side-effect free. Put every external effect in a retry-safe Activity with one side effect each; derive idempotency keys from immutable Workflow input, never a UUID minted in Workflow code.
 47. Commit local database work before starting or signaling a Workflow. Never hold a transaction across a Temporal operation. Do not add reconciliation loops, signal-with-start, or workflow-resume-from-database unless the user explicitly requires them.
 48. Use deterministic workflow IDs, `.rejectDuplicate` reuse, `.useExisting` conflicts, signal-only commands, and queries for observation. Do not wait for completion from a signal command.
-49. A worker owns no database. It reaches its service's data over gRPC as a `service`, through worker-facing RPCs the service exposes in a separate gRPC service beside the user-facing one.
+49. A worker owns no database, and its manifest says so: `<Service>Worker` links Core, GRPC, Workflows, the provider adapters its Activities use, and `ServiceIdentity` — never `<Service>Postgres` or a database driver. It reaches its service's data over gRPC as a `service`, through worker-facing RPCs the service exposes in a separate gRPC service beside the user-facing one. Deploy the worker image at the same tag as the service.
 50. Give an Activity a distinct registration name whenever two containers on one worker would otherwise share it.
 
 ### API gateway
@@ -164,7 +164,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 2. Implement feature-first Core: entities, commands, repositories, context protocols, use-case contracts, typed errors, policies, use cases.
 3. Implement Postgres: context, database, statements, repositories, error translation, `CreateServiceRole` first, then ordered migrations; policies where rows belong to callers.
 4. Implement generated gRPC service conformances and feature-local `Protobuf/` conversions, with identity checks per RPC.
-5. With Temporal: Workflows, Activities, the Core workflow-client port, its Temporal adapter, and the `worker` command.
+5. With Temporal: Workflows, Activities, the Core workflow-client port, its Temporal adapter, and the `<Service>Worker` executable with its own composition root.
 6. Add `serve` and `database migrate` composition roots with configuration, logging, transport-security factories, and lifecycle.
 7. Add the service's environment pieces per environment.md.
 8. Build the whole package, then exercise contracts, identity paths, and infrastructure boundaries.
@@ -218,7 +218,7 @@ Do not call work complete until every applicable gate passes.
 - Every process that calls as itself holds a `service` credential issued by an operator command and exchanged at startup; every person-only guard tests the role before parsing the subject.
 
 **Workflows**
-- Temporal clients and workers are lifecycle-managed; Workflows contain no side effects; Activities are retry-safe and distinctly named; the worker holds no database.
+- Temporal clients and workers are lifecycle-managed; Workflows contain no side effects; Activities are retry-safe and distinctly named; the worker is its own executable whose target links no database.
 
 **Gateway**
 - Two targets, no database, OpenAPI document in the generating target.

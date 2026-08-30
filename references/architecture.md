@@ -10,6 +10,7 @@ Use a service-oriented SwiftPM package, not textbook layer names. The package is
 ├── <Service>Postgres ─────→ <Service>Core
 ├── <Service>GRPC ─────────→ <Service>Core
 ├── <Service>Workflows ────→ <Service>Core  # only with Temporal
+├── <Service>Worker ───────→ Core, GRPC, Workflows, providers  # only with Temporal; a second executable
 ├── <Service><Technology> ─→ <Service>Core  # one per third-party provider SDK
 └── <Service> ─────────────→ all required targets
 ```
@@ -22,6 +23,7 @@ Use a service-oriented SwiftPM package, not textbook layer names. The package is
 | `<Service>GRPC` | Generated-service conformances, request/input mapping, domain/protobuf mapping, RPC error translation, per-RPC identity checks | SQL, environment reading, server construction |
 | `<Service>Workflows` | Temporal Workflows, Activity containers, workflow-client adapters, signals, queries, Temporal error translation | SQL implementations, generated protobuf, environment reading, dependency construction |
 | `<Service>` | ArgumentParser command tree, environment configuration, logging bootstrap, dependency construction, server/client construction, lifecycle | Reusable business rules |
+| `<Service>Worker` | The Temporal worker's command, configuration, logging bootstrap, client and worker construction, lifecycle — a second composition root | A database client, a server, business rules |
 
 ## Dependency direction
 

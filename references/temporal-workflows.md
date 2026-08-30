@@ -216,7 +216,7 @@ This preserves cancellation: if the parent Workflow was cancelled rather than me
 
 ## Worker composition
 
-Register `Worker.self` beside `Serve.self` and `Database.self` in the executable command tree. Run `TemporalWorker` from the `worker` subcommand, not from the gRPC `serve` command.
+The worker is a second executable target, `<Service>Worker` (product `<service>-worker`, image `<organization>-<service>-worker`), in the service's package — not a subcommand of the service executable and never the gRPC `serve` process. Its target links Core, GRPC, Workflows, the provider adapters its Activities use, and `ServiceIdentity`; it does not link `<Service>Postgres` or a database driver, so the rule below is enforced by the manifest.
 
 **The worker owns no database.** An Activity resolves and records through the services that own the data, over gRPC, authenticated as a `service` (see *Processes: the service role* in [identity-and-access.md](identity-and-access.md)) — the same clients it uses to call any other service. This keeps a service's rows reached one way, through its contract and its server interceptor, whether the caller is a request or this worker; a worker with its own `PostgresClient` reintroduces a second path into that data and, where the tables carry row-level security, a second identity-stamping mechanism beside the interceptor's ([persistence.md](persistence.md)). Give the owning service the operations the worker needs, gated to `service`/`admin`, rather than a connection to the worker. Put those operations in their own gRPC service beside the user-facing one — `ItemReconciliationService` beside `ItemService` — so the two audiences have distinct, separately gated contracts served by the one `serve` process.
 

@@ -12,7 +12,7 @@ The skill standardizes:
 - a shared identity package: EdDSA single-issuer tokens, identification separated from enforcement, caller propagation, and a `service` role for processes with operator-issued credentials
 - mutual TLS on every internal connection from a CA the stack issues itself, with all key material configured by path
 - a Hummingbird API gateway with layered request contexts, tiered routing, flat admin routes, and RFC 9457 error translation
-- durable Temporal workflows, Activities, signals, queries, and a worker that owns no database
+- durable Temporal workflows, Activities, signals, queries, and a worker that is its own executable and owns no database
 - service boundaries, communication choices, consistency, resilience, and observability for a whole system
 - one environment reference — images, Compose, ports, secrets, certificates, the gateway's address, the staged first start — kept out of every other file
 - staged extraction of bounded contexts from a modular monolith

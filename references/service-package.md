@@ -92,8 +92,12 @@ Sources/
         Migrate.swift
     Serve/
       Serve.swift
-    Worker/
-      Worker.swift                 # only with Temporal
+  <Service>Worker/                 # only with Temporal — its own executable
+    Worker.swift
+    Configuration/
+      TransportSecurity+ConfigReader.swift            # its own copies of what it reads
+      LokiLogProcessorConfiguration+ConfigReader.swift
+      ServiceIdentityCredentials+ConfigReader.swift
     ServiceCredentials/            # only on the authenticating service
       ServiceCredentials.swift
       Create.swift
@@ -230,4 +234,13 @@ swiftLanguageModes: [.v6]
 
 Include a direct product dependency in every target that imports its module. The executable — not the feature target — needs `GRPCNIOTransportHTTP2` because it constructs the transport. Remove any dependency a target does not import.
 
-Do not expose internal library products by default. The executable is the package product. Internal targets communicate through `package` declarations.
+Do not expose internal library products by default. The executables are the package products — `<service>`, and `<service>-worker` when the service uses Temporal:
+
+```swift
+products: [
+    .executable(name: "<service>", targets: ["<Service>"]),
+    .executable(name: "<service>-worker", targets: ["<Service>Worker"]), // only with Temporal
+]
+```
+
+Internal targets communicate through `package` declarations. The worker is a separate executable rather than a subcommand so that it links only what it uses: the manifest edge, not discipline, is what keeps a database driver out of it. Its `+ConfigReader` extensions are copies, not a shared target — a shared configuration target would carry the Postgres extension and its driver back into the worker.
