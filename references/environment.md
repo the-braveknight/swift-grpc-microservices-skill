@@ -17,7 +17,7 @@ How the system runs as a whole on one machine or one host: images, Compose, port
 
 ## Container build
 
-Every service builds its own static Linux image with the same `Makefile`, pushed straight to the registry — no Docker daemon involved:
+The images the environment runs come from the delivery pipeline — a `Containerfile` built and pushed per commit (see delivery.md); nothing here builds what production pulls. For a local build on a workstation, every service carries the same `Makefile`, producing a static Linux image with no Docker daemon involved:
 
 ```make
 TAG ?= latest

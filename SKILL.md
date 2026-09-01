@@ -1,6 +1,6 @@
 ---
 name: swift-grpc-microservices-skill
-description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems with an opinionated, experience-derived architecture. Use when creating a service or multi-service system, defining service boundaries and communication, structuring SwiftPM service packages, designing versioned protobuf contracts, implementing Postgres ownership, row-level security and idempotent writes, wiring grpc-swift servers and clients with mutual TLS, issuing and verifying caller and service identities, fronting a system with a Hummingbird HTTP gateway, coordinating durable Temporal workflows and workers, composing executables and Docker Compose environments, or extracting bounded contexts from a modular monolith.
+description: Design, build, deploy, and evolve production Swift gRPC microservices and distributed systems with an opinionated, experience-derived architecture. Use when creating a service or multi-service system, defining service boundaries and communication, structuring SwiftPM service packages, designing versioned protobuf contracts, implementing Postgres ownership, row-level security and idempotent writes, wiring grpc-swift servers and clients with mutual TLS, issuing and verifying caller and service identities, fronting a system with a Hummingbird HTTP gateway, coordinating durable Temporal workflows and workers, composing executables and Docker Compose environments, testing use cases against mock repositories, delivering per-commit images through branch-per-environment CI/CD, or extracting bounded contexts from a modular monolith.
 ---
 
 # Swift gRPC Microservices
@@ -17,6 +17,7 @@ Read the reference that owns a topic before touching that topic. Each topic has 
 | Creating or editing Swift | [swift-style.md](references/swift-style.md) |
 | Creating or reshaping a service package, manifest, or dependency set | [service-package.md](references/service-package.md) |
 | Entities, commands, repositories, contexts, use cases, policies | [core.md](references/core.md) |
+| Test targets, mocks, what a use-case test covers | [testing.md](references/testing.md) |
 | Postgres, statements, transactions, migrations, the service role, row-level security, idempotent writes | [persistence.md](references/persistence.md) |
 | Proto contracts, producer and consumer adapters, error-to-status mapping | [grpc-and-protos.md](references/grpc-and-protos.md) |
 | Executables, configuration, logging bootstrap, lifecycle, transport-security factories | [composition.md](references/composition.md) |
@@ -25,6 +26,7 @@ Read the reference that owns a topic before touching that topic. Each topic has 
 | Temporal workflows, Activities, clients, signals, queries, timers, workers | [temporal-workflows.md](references/temporal-workflows.md) — read in full |
 | Service boundaries, communication choice, consistency, resilience, observability | [distributed-systems.md](references/distributed-systems.md) |
 | Images, Compose, ports, secrets, certificates, the gateway's address, first start | [environment.md](references/environment.md) — the only file that describes the running environment |
+| Branches, CI, release images, per-commit publishing, deployment, migrations in the pipeline | [delivery.md](references/delivery.md) — the only file that describes the pipeline |
 | Extracting a bounded context from an existing monolith | [extraction-runbook.md](references/extraction-runbook.md) — read in full |
 
 ## Principles
@@ -136,11 +138,25 @@ The rules below follow from these. When a situation is not covered, decide from 
 59. Mount secrets as files; guard required variables with `${VAR:?message}`; verify every anchor is referenced; render with `docker compose config` before `up`.
 60. The first start is staged: infrastructure and the issuer's migration, issue service credentials, then everything.
 
+### Tests
+
+61. Give every service a `<Service>CoreTests` target — swift-testing, depending on Core and the `swift-log` facade alone. `package` access means plain imports; needing `@testable` signals a wrong access level.
+62. Test use cases against an actor mock repository and a `MockDatabase` whose `withTransaction` just runs the operation, constructed through a scoped `withDatabase(repository:operation:)` helper in `Mocks/`. Fixed dates, never `Date()`. Duplicate the mocks per service; never a shared testing package.
+63. Cover the success path, every guard (asserting the repository was never reached), and every repository-error-to-use-case-error translation — one test per case of the error enum. Use-case tests carry no identity scaffolding and no database: requiring a caller is the handler's decision, and row confinement is the database's.
+64. `swift test` runs the target with no infrastructure. Exercising RLS policies is persistence verification against a real database, not a unit test.
+
+### Delivery
+
+65. Two branches, two environments: every develop commit tests, publishes, and deploys to staging; every main commit tests and publishes, deploying to production once it exists. Promotion is a merge, never a steady-state cherry-pick. Deploy steps are mandatory — missing configuration fails the pipeline loudly, never skips it.
+66. Publish an image per commit: an immutable short-SHA tag that is the only thing ever deployed, plus a moving branch tag for humans and bootstrap. Build the Containerfile natively for the deployment host's architecture. Services carry no SemVer tags or releases; SemVer belongs to the contract packages.
+67. Reuse the swiftlang test workflow pinned by tag, collapsed to the single toolchain, OS, and architecture production runs, with `swift test --disable-automatic-resolution` so the committed `Package.resolved` is the build. Keep deployment mechanics in the organization's `ci` repository as tag-versioned composite actions; workflows keep declarative steps only.
+68. Run migrations as a platform one-shot pinned to the same image and wait for it before rolling serve, unconditionally — the migration library makes no-ops cheap. Migrations are expand/contract, because deploys roll back and schemas do not. Point dependabot's version updates at develop; prune the registry weekly per repository.
+
 ### Working in an existing system
 
-61. Preserve behavior, naming, and unrelated user changes. Make only the boundary-required adjustment when copying code into a new service.
-62. Never infer permission to drop tables, discard data, or delete a migration. Finish the non-destructive work and surface the decision.
-63. For greenfield work, state consequential assumptions and choose the smallest architecture that satisfies current requirements.
+69. Preserve behavior, naming, and unrelated user changes. Make only the boundary-required adjustment when copying code into a new service.
+70. Never infer permission to drop tables, discard data, or delete a migration. Finish the non-destructive work and surface the decision.
+71. For greenfield work, state consequential assumptions and choose the smallest architecture that satisfies current requirements.
 
 ## Choose the workflow
 
@@ -163,12 +179,14 @@ The rules below follow from these. When a situation is not covered, decide from 
 
 1. Run `swift package init --type executable`, then reshape to `<Service>Core`, `<Service>Postgres`, `<Service>GRPC`, `<Service>`, plus `<Service>Workflows` and provider targets only when needed.
 2. Implement feature-first Core: entities, commands, repositories, context protocols, use-case contracts, typed errors, policies, use cases.
-3. Implement Postgres: context, database, statements, repositories, error translation, `CreateServiceRole` first, then ordered migrations; policies where rows belong to callers.
-4. Implement generated gRPC service conformances and feature-local `Protobuf/` conversions, with identity checks per RPC.
-5. With Temporal: Workflows, Activities, the Core workflow-client port, its Temporal adapter, and the `<Service>Worker` executable with its own composition root.
-6. Add `serve` and `database migrate` composition roots with configuration, logging, transport-security factories, and lifecycle.
-7. Add the service's environment pieces per environment.md.
-8. Build the whole package, then exercise contracts, identity paths, and infrastructure boundaries.
+3. Add `<Service>CoreTests` beside it: mocks, the scoped database helper, and the guard/translation/success matrix per testing.md.
+4. Implement Postgres: context, database, statements, repositories, error translation, `CreateServiceRole` first, then ordered migrations; policies where rows belong to callers.
+5. Implement generated gRPC service conformances and feature-local `Protobuf/` conversions, with identity checks per RPC.
+6. With Temporal: Workflows, Activities, the Core workflow-client port, its Temporal adapter, and the `<Service>Worker` executable with its own composition root.
+7. Add `serve` and `database migrate` composition roots with configuration, logging, transport-security factories, and lifecycle.
+8. Add the service's environment pieces per environment.md.
+9. Add the workflows, Containerfile, and dependabot configuration per delivery.md.
+10. Build the whole package, run the tests, then exercise contracts, identity paths, and infrastructure boundaries.
 
 ### Build an API gateway
 
@@ -199,6 +217,9 @@ Do not call work complete until every applicable gate passes.
 - Generated protobuf types appear only in proto, transport, and client-boundary code; Postgres types only in Postgres and composition code.
 - Single-operation use cases use `withConnection`; multi-operation units use `withTransaction`; an RLS service has no `withConnection`.
 
+**Tests**
+- `<Service>CoreTests` passes with `swift test` and no infrastructure; every use case covers its success path, each guard, and each error translation against mocks alone.
+
 **Persistence**
 - Every service owns a dedicated database; migrations are applied; no service-named schema exists.
 - Every entity identifier is database-generated and absent from create inputs.
@@ -225,6 +246,10 @@ Do not call work complete until every applicable gate passes.
 - Two targets, no database, OpenAPI document in the generating target.
 - Child contexts preserve path parameters; administrative routes share the resource path and are gated by context conversion.
 - Upstream failures reach the client as problem details with the mapped status.
+
+**Delivery**
+- Every commit to a deployment branch publishes a SHA-tagged image; the staging branch deploys it with migrations run and awaited before serve rolls.
+- CI resolves from the committed `Package.resolved` and tests the architecture production runs; a missing deploy secret or variable fails the pipeline rather than skipping the deploy.
 
 **Operations**
 - Every long-lived client, server, and worker is in a `ServiceGroup` with graceful shutdown.

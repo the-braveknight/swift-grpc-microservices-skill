@@ -15,6 +15,8 @@ The skill standardizes:
 - durable Temporal workflows, Activities, signals, queries, and a worker that is its own executable and owns no database
 - service boundaries, communication choices, consistency, resilience, and observability for a whole system
 - one environment reference — images, Compose, ports, secrets, certificates, the gateway's address, the staged first start — kept out of every other file
+- infrastructure-free use-case tests: a `<Service>CoreTests` target with actor mocks, a scoped database helper, and a guard/translation/success matrix
+- branch-per-environment delivery: per-commit SHA-tagged images from a Containerfile, a reused swiftlang test workflow, shared deployment actions in one `ci` repository, migrations awaited before serve rolls
 - staged extraction of bounded contexts from a modular monolith
 
 The agent instructions are in [SKILL.md](SKILL.md): principles, themed governing rules, workflows, and completion gates. Detail lives in [references](references), one file per topic, loaded as needed.
