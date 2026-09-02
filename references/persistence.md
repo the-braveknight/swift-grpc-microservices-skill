@@ -182,7 +182,7 @@ Rows in terminal states fall out of the index, so the value frees automatically 
 
 A service owns the whole database. Use unqualified names such as `items`, not `<service>.items`, and do not create a service-named schema.
 
-Name migrations for their result, such as `CreateItemsTable`. Do not prefix a migration with the service name; it already lives inside the service-owned Postgres module. Give each table its own create migration; keep that table's indexes and constraints with it rather than combining several tables into one migration. Keep migrations under `Migrations/<Entity>` and register them explicitly in dependency order in the executable `database migrate` command, parents before children.
+Name migrations for their result, such as `CreateItemsTable`. Do not prefix a migration with the service name; it already lives inside the service-owned Postgres module. Give each table its own create migration; keep that table's indexes and constraints with it rather than combining several tables into one migration. Keep migrations under `Migrations/<Entity>` and register them explicitly in dependency order in the executable's migration list, parents before children — `serve --migrate-database` applies it at boot (see *Migrations at boot* in composition.md).
 
 Write single-column uniqueness inline, such as `email TEXT NOT NULL UNIQUE`; use table-level `UNIQUE (...)` only for multi-column uniqueness. Do not add `CHECK (... IN (...))` constraints unless the user explicitly requests them.
 
@@ -194,8 +194,8 @@ Dropping a table, deleting a migration, or moving data is a destructive product 
 
 Every service has two Postgres roles, and its **first migration** creates the second one:
 
-- the owner — `POSTGRES_USER` — runs `database migrate` and owns every table;
-- the service role — `<service>_service`, from `POSTGRES_SERVICE_ROLE` / `POSTGRES_SERVICE_PASSWORD` — is what `serve`, `worker`, and every other command that reads or writes data connect as. It may read and write the service's tables and nothing more.
+- the owner — the instance's own `POSTGRES_USER` / `POSTGRES_PASSWORD`, verbatim — runs the migrations at boot and owns every table;
+- the service role — `<service>_service`, from `POSTGRES_SERVICE_USER` / `POSTGRES_SERVICE_PASSWORD` — is what serving and every other data path connect as. It may read and write the service's tables and nothing more.
 
 ```swift
 let migrations = DatabaseMigrations()

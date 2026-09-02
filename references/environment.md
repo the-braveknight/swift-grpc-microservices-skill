@@ -43,12 +43,6 @@ One `compose.yml` at the workspace root runs the whole system from published ima
 Shared configuration is declared once as anchors and merged into every service that needs it:
 
 ```yaml
-x-postgres-connection: &postgres-connection
-  POSTGRES_HOST: postgres
-  POSTGRES_PORT: "5432"
-  POSTGRES_USER: ${POSTGRES_USER:?set the database owner}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set the database owner password}
-
 x-jwt-verification: &jwt-verification
   JWT_PUBLIC_KEY_PATH: /run/secrets/jwt-public
 
@@ -67,29 +61,37 @@ Consumers reach producers by service name: `GRPC_<SERVICE>_HOST=<service>`, `GRP
 
 ## Postgres and migrations
 
-One `postgres:18` container for the suite, a dedicated volume mounted at `/var/lib/postgresql` (PostgreSQL 18 changed the image's volume layout; do not set a custom `PGDATA`), a health check, and no `ports:`. A `postgres-init` job creates one database per service — `<project>_<service>` — if absent. Never share a database or its credentials between services because they happen to run in one project.
+One Postgres instance **per service** — `<service>-postgres`, `postgres:18`, its own volume mounted at `/var/lib/postgresql` (PostgreSQL 18 changed the image's volume layout; do not set a custom `PGDATA`), a health check, and no `ports:`. The instance is provisioned with its database and owner through the image's own variables, so there is no init job and nothing ever creates a database. Never share an instance or its credentials between services because they happen to run in one project.
 
 Per service:
 
-- `<service>-migrate`: the service image with `command: ["database", "migrate"]`, gated on `postgres-init`, connecting as the owner and carrying `POSTGRES_SERVICE_ROLE` / `POSTGRES_SERVICE_PASSWORD` for its first migration to create;
-- `<service>`: `command: ["serve"]`, gated on the migration job, connecting **as the service role** by overriding the anchor's credentials;
+- `<service>`: `command: ["serve", "--migrate-database"]`, gated on its instance's health check. Migrations run in-process as the owner before the server binds; serving connects as the service role the first migration creates. There is no migrate one-shot.
 - `<service>-worker`: its own image, `<organization>-<service>-worker`, at the same tag as the service, when the service uses Temporal — with the service clients, credential, and Temporal configuration its Activities need, and no Postgres variables at all. No `command:` — the image has one.
 
 ```yaml
-<service>-migrate:
+<service>-postgres:
+  image: postgres:18
   environment:
-    <<: *postgres-connection
     POSTGRES_DB: <project>_<service>
-    POSTGRES_SERVICE_ROLE: ${<SERVICE>_SERVICE_ROLE:-<service>_service}
-    POSTGRES_SERVICE_PASSWORD: ${<SERVICE>_SERVICE_PASSWORD:?set the service role password}
+    POSTGRES_USER: ${<SERVICE>_OWNER:-<organization>}
+    POSTGRES_PASSWORD: ${<SERVICE>_OWNER_PASSWORD:?set the instance owner password}
+  volumes:
+    - <service>-postgres-data:/var/lib/postgresql
 
 <service>:
+  command: ["serve", "--migrate-database"]
   environment:
-    <<: [*postgres-connection, *jwt-verification, *tls, *observability]
+    <<: [*jwt-verification, *tls, *observability]
+    POSTGRES_HOST: <service>-postgres
+    POSTGRES_PORT: "5432"
     POSTGRES_DB: <project>_<service>
-    POSTGRES_USER: ${<SERVICE>_SERVICE_ROLE:-<service>_service}
-    POSTGRES_PASSWORD: ${<SERVICE>_SERVICE_PASSWORD:?set the service role password}
+    POSTGRES_USER: ${<SERVICE>_OWNER:-<organization>}          # the instance's pair, verbatim — migrations only
+    POSTGRES_PASSWORD: ${<SERVICE>_OWNER_PASSWORD:?set the instance owner password}
+    POSTGRES_SERVICE_USER: ${<SERVICE>_SERVICE_USER:-<service>_service}
+    POSTGRES_SERVICE_PASSWORD: ${<SERVICE>_SERVICE_PASSWORD:?set the service role password}
 ```
+
+The service's Postgres block repeats the instance's `POSTGRES_*` values because the app reads them as the owner connection; the `SERVICE_*` pair names the confined role serving uses. The owner pair sits in the serving container's environment — the accepted price of in-process migration; the serving *process* never connects with it.
 
 The migration library refuses a migration list whose order differs from what a database has already applied — it throws, it does not revert. A change that inserts a migration before applied ones (adopting the service-role-first standard on an existing database, say) therefore means `docker compose down -v` and a fresh start, not an in-place `up`. Appending a migration applies in place.
 
@@ -130,14 +132,18 @@ Only the authenticating service mounts the private key. Every service that verif
 A process's service credential is a mounted secret like a key, and it is the one secret that cannot exist before the stack has run: it is issued against the issuer's migrated database. The first start is therefore staged, and `.env.example` says so:
 
 ```sh
-docker compose up -d postgres postgres-init authentication-migrate
+touch secrets/authentication.secret secrets/<service>-worker.secret   # Compose refuses missing files
+docker compose up -d authentication-postgres authentication           # boots with --migrate-database
 docker compose run --rm --no-deps -T authentication service-credentials create --id authentication \
     > secrets/authentication.secret < /dev/null
 docker compose run --rm --no-deps -T authentication service-credentials create --id <service>-worker \
     > secrets/<service>-worker.secret < /dev/null
 chmod 600 secrets/*.secret
-docker compose up -d
+docker compose up -d --force-recreate
 ```
+
+The empty files are placeholders: the issuer starts and migrates with them, its verifier rejecting
+everything until the real credentials exist and the recreate picks them up.
 
 `--no-deps` because the issuing service itself cannot start until its own secret exists; `-T … < /dev/null` because `docker compose run` otherwise attaches stdin and, in a script piped over `ssh`, consumes the rest of the script. Every service that verifies tokens must already be the build that decodes the process's role before that process starts, or its every call is refused.
 

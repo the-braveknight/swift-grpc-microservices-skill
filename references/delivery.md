@@ -10,7 +10,6 @@ How a service moves from a commit to a running process: branches and environment
 - The release image
 - Publishing per commit
 - The registry
-- The shared actions repository
 - Deploying to the platform
 - Platform configuration and its traps
 - Migrations in the pipeline
@@ -21,7 +20,7 @@ How a service moves from a commit to a running process: branches and environment
 
 Two long-lived branches, each bound to one environment:
 
-- **`develop` is staging.** Every commit publishes an image and deploys it — tests, image, migrations, serve, unattended. Staging is where push-and-see-it-running lives.
+- **`develop` is staging.** Every commit publishes an image and deploys it — tests, image, deploy trigger, boot-time migrations, unattended. Staging is where push-and-see-it-running lives.
 - **`main` is production.** Every commit publishes an image; the deploy steps exist only once a production platform does. Promotion is a merge from develop to main — after the first sync, never cherry-picks, so the histories stay converged and script or workflow fixes ride the same merge as code.
 
 Pull requests run the tests job regardless of target branch. Deployment steps are mandatory, not gated: a missing secret or variable fails the pipeline loudly through the action's own environment checks rather than skipping the deploy and reporting green. A pipeline that silently does less than it claims is worse than a red one.
@@ -35,12 +34,12 @@ Each service repository carries four small workflows and a dependabot configurat
 | File | Trigger | Does |
 | --- | --- | --- |
 | `pull_request.yml` | every PR | the tests job |
-| `develop.yml` | push to develop | tests → publish → migrate → deploy (staging) |
+| `develop.yml` | push to develop | tests → publish → deploy (staging) |
 | `main.yml` | push to main | tests → publish (production deploy steps join when the platform exists) |
 | `cleanup-images.yml` | weekly cron | prunes the registry to a recent window |
 | `dependabot.yml` | weekly | Swift and Actions bumps as PRs against develop |
 
-Third-party actions are pinned to commit SHAs with a version comment; dependabot keeps the pins moving. The organization's own actions are pinned by SemVer tag (below).
+Third-party actions are pinned to commit SHAs with a version comment; dependabot keeps the pins moving. The organization's own actions, where any exist, are pinned by SemVer tag (see *Deploying to the platform*).
 
 ## The tests job
 
@@ -81,66 +80,48 @@ ghcr.io/<organization>/<organization>-<service>:<short-sha>
 ghcr.io/<organization>/<organization>-<service>:<branch>
 ```
 
-The **short SHA tag is immutable and is the only thing ever deployed**; rollback is deploying an older SHA. The moving branch tag (`develop`, `main`) exists for humans and bootstrap — pulling "the latest staging build" by hand, seeding a platform application before its first pipeline deploy — and nothing in the pipeline consumes it after that.
+The **short SHA tag is immutable** and exists for forensics and rollback; the moving branch tag (`develop`, `main`) is what the platform applications track. A deploy is therefore a trigger, not a reconfiguration: the platform pulls the branch tag it already points at. Rolling back means pinning an older SHA on the application in the platform and deploying — an operator action, deliberately outside the pipeline.
 
 ## The registry
 
 The workflow's own `GITHUB_TOKEN` pushes, with `permissions: packages: write` on the job. One trap: a package that already exists — created by a manual push under a personal token — does not trust any repository's `GITHUB_TOKEN` until the package's *Manage Actions access* setting grants the repository write (admin, if the cleanup workflow is to delete versions). The setting is UI-only; the first pipeline push of every pre-existing package fails `permission_denied` until it is made.
 
-## The shared actions repository
-
-Deployment mechanics live in one organization repository — `<organization>/ci` — as composite actions, so a platform-API quirk is fixed once and reaches every service as a tag bump instead of hand-synced copies:
-
-- **`dokploy-migrate`**: pins the migration application to the image, deploys the one-shot, polls the platform's deployment status until done; a failed or timed-out migration fails the pipeline before serve is touched.
-- **`dokploy-deploy`**: pins the exact image tag on the application, then rolls it.
-
-Both take the same inputs — `url`, `api-key`, `app-id`, `image` — and each action directory carries a same-named script the action step runs. Tags are plain SemVer without a `v` prefix, the same convention as the contract packages, and dependabot's `github-actions` ecosystem bumps consumers. The repository can stay private with organization-wide Actions access enabled.
-
-The dividing line for what belongs there: **logic that changes** (a third-party platform's API mechanics) is centralized; **declarations that don't** (a cron line, a retention count, a package name) stay in each repository. The cleanup workflow, for instance, must live per-repo regardless — schedules only fire in the repository that hosts them, and package deletion needs the repository's own token.
-
 ## Deploying to the platform
 
-The default platform is Dokploy, driven entirely over its HTTP API with an `x-api-key` token — the same two-call shape any platform needs: *update* the application's image reference to the exact SHA, then *deploy*. Pinning before rolling keeps the platform UI naming the commit that is actually running, and makes rollback "set the previous SHA and deploy".
-
-The workflow binds the actions to an environment through secrets and variables — the endpoint and token as secrets, the application ids as variables, a `STAGING_` prefix distinguishing staging's from production's:
+The default platform is Dokploy. Each service is one platform application, Docker-image sourced, tracking the branch's moving tag (`:develop` on staging) with `command: ./<service> serve --migrate-database`. The deploy step is a single trigger — a SHA-pinned marketplace action that POSTs the platform's deploy endpoint and nothing else:
 
 ```yaml
-      - name: Run staging migrations
-        uses: <organization>/ci/dokploy-migrate@<tag>
+      - name: Deploy to staging Dokploy
+        uses: benbristow/dokploy-deploy-action@<commit-sha> # <version>
         with:
-          url: ${{ secrets.STAGING_DOKPLOY_URL }}
-          api-key: ${{ secrets.STAGING_DOKPLOY_API_KEY }}
-          app-id: ${{ vars.STAGING_<SERVICE>_MIGRATE_APP_ID }}
-          image: ghcr.io/<organization>/<organization>-<service>:${{ steps.sha.outputs.short }}
-
-      - name: Deploy to staging
-        uses: <organization>/ci/dokploy-deploy@<tag>
-        with:
-          url: ${{ secrets.STAGING_DOKPLOY_URL }}
-          api-key: ${{ secrets.STAGING_DOKPLOY_API_KEY }}
-          app-id: ${{ vars.STAGING_<SERVICE>_APP_ID }}
-          image: ghcr.io/<organization>/<organization>-<service>:${{ steps.sha.outputs.short }}
+          dokploy_url: ${{ secrets.DOKPLOY_URL }}
+          api_token: ${{ secrets.API_TOKEN }}
+          application_id: ${{ secrets.APPLICATION_ID }}
 ```
 
-The platform API must be reachable from the runner: a public endpoint is two curls with a bearer key; a tailnet-only endpoint means a tailnet-join action in the workflow or publish-only CI with deploys triggered from inside. The API key is a deploy credential that can reconfigure every application — rotate it on any suspicion, and keep the platform account behind a second factor.
+Three plain secrets bind the environment; production's workflow carries the same step with its own values. The step is mandatory, not gated — a missing secret fails the pipeline loudly rather than skipping the deploy. The platform API must be reachable from the runner: a public endpoint (a tailnet Funnel included) is one HTTPS call with a bearer key; a tailnet-only endpoint means a tailnet-join action in the workflow or publish-only CI with deploys triggered from inside. The API key is a deploy credential that can reconfigure every application — rotate it on any suspicion, and keep the platform account behind a second factor.
+
+An organization `ci` repository of composite actions remains the right home for platform logic that *churns* — versioned with plain SemVer tags dependabot bumps — but with a trigger-only deploy there is currently nothing left to centralize. The dividing line stands: **logic that changes** is centralized; **declarations that don't** (a cron line, a retention count, a package name) stay in each repository. The cleanup workflow, for instance, must live per-repo regardless — schedules only fire in the repository that hosts them, and package deletion needs the repository's own token.
 
 ## Platform configuration and its traps
 
-One application per process — `<service>`, `<service>-migrate`, `<service>-worker` — Docker-image sourced, environment carried per application (a platform's project-level variables are usually interpolation references, not injected values; prefer concrete values per app). Key files arrive as file mounts at the same paths the Compose environment used, so the service's configuration does not know which environment it is in.
+One application per process — `<service>`, `<service>-worker` — plus a per-service Postgres instance, Docker-image sourced, environment carried per application (a platform's project-level variables are usually interpolation references, not injected values; prefer concrete values per app). Key files arrive as file mounts at the same paths the Compose environment used, so the service's configuration does not know which environment it is in.
 
 Dokploy specifics, each learned the expensive way:
 
-- **`command` replaces the image's entrypoint**, it does not append to it: write `./<service> database migrate`, never `database migrate`.
-- **A one-shot application needs restart policy `none`**, or the platform's scheduler restarts the exited migration forever.
+- **`command` replaces the image's entrypoint**, it does not append to it: write `./<service> serve --migrate-database`, never `serve --migrate-database`.
+- **A one-shot application needs restart policy `none`**, or the platform's scheduler restarts it forever (relevant to any future job-shaped application; migrations no longer are one).
 - **Application names are immutable and get a random suffix at creation.** The suffixed name is the internal DNS name — so every mTLS leaf needs the suffixed name as a SAN beside the plain service name (see *Transport security: the certificate volume* in environment.md), issued against the same CA.
 - **Do not link an application to a registry entry**: on this platform that designates a *cluster* registry and re-uploads every image to it on deploy — which a read-only pull token cannot do. Registry credentials entered once in the platform UI land in the host's Docker login and cover pulls for every application.
 - **A crash-looping service can pin a stale spec**: after fixing configuration, stop the application entirely, then deploy, rather than deploying over the loop.
 
 ## Migrations in the pipeline
 
-Migrations run as their own application — the same image, `database migrate`, the owner's credentials — never folded into the serve entrypoint, which would hand the serving process credentials that can create roles (see *The service role* in persistence.md). The pipeline runs the migrate action unconditionally before every serve deploy: the migration library applies only the delta, so the common case is a fast no-op and ordering is guaranteed by construction rather than by remembering.
+Migrations run **in the serving container, at boot**: the application's command is `serve --migrate-database`, and the process applies the list over a short-lived owner client before the server binds (see *Migrations at boot* in composition.md). There is no migrate application and no pipeline ordering to maintain — a container cannot serve an unmigrated schema, because it migrates before it listens. The migration library makes the no-migration case a cheap no-op, so the flag stays on unconditionally.
 
-Two facts the ordering cannot fix, and one rule that absorbs both: the old serve build briefly runs against the new schema during every deploy, and a rollback runs old code against a schema that migrated forward — **so migrations are expand/contract**. Adding tables, nullable columns, and indexes is always safe; renames, drops, and tightening constraints ship in a later commit, after no deployed code references the old shape. A genuinely breaking migration is the rare event where the deploy is watched rather than unattended.
+The trade, accepted with open eyes: the owner credentials sit in the serving container's environment for its lifetime. The serving *process* still connects only as the confined role — the row-level-security posture is unchanged — but a compromise of the container's environment now yields the owner pair. Two residual cautions: multiple replicas of one service would race the apply at startup (fine on one node; an advisory lock before the list when replicas arrive), and a failed migration crash-loops the new task while the platform's rolling update keeps the old one serving.
+
+Two facts boot-ordering cannot fix, and one rule that absorbs both: the old build briefly runs against the new schema during every deploy, and a rollback runs old code against a schema that migrated forward — **so migrations are expand/contract**. Adding tables, nullable columns, and indexes is always safe; renames, drops, and tightening constraints ship in a *later* commit, only after no deployed code references the old shape. A genuinely breaking migration is the rare event where the deploy is watched rather than unattended.
 
 ## Dependency updates
 

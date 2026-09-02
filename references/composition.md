@@ -12,12 +12,12 @@
 
 ## Command tree
 
-Name the executable target after the service, not `<Service>Server`. Make the root command default to serving and expose database migration as a nested subcommand:
+Name the executable target after the service, not `<Service>Server`. The root command defaults to serving, and there is no migrate subcommand: migrations are a `serve` flag, applied in-process before the server binds (see *Migrations at boot* below).
 
 ```text
 catalog                          # defaults to serve
 catalog serve
-catalog database migrate
+catalog serve --migrate-database # apply pending migrations, then serve
 catalog-worker                   # only with Temporal — a second executable, one command
 catalog service-credentials create --id <name>   # only on the authenticating service
 ```
@@ -29,15 +29,14 @@ struct Catalog: AsyncParsableCommand {
         commandName: "catalog",
         abstract: "Catalog Service",
         subcommands: [
-            Serve.self,
-            Database.self
+            Serve.self
         ],
         defaultSubcommand: Serve.self
     )
 }
 ```
 
-Put commands in `<Service>/<Command>/`, except the small root `Database.swift` at `<Service>/Database/Database.swift` with `Migrate` nested below it.
+Put commands in `<Service>/<Command>/`; the migration list lives at `<Service>/Database/Migrations.swift`.
 
 ## Environment configuration
 
@@ -283,27 +282,35 @@ try await withThrowingTaskGroup { group in
 
 `GRPCClient` tolerates an RPC that races its `run()`, so the exchange may start before the group has fully started its clients. Read the credential through `ServiceIdentityCredentials+ConfigReader.swift`: `SERVICE_CREDENTIAL_ID` and `SERVICE_CREDENTIAL_SECRET_PATH`, the file's trailing newline trimmed. The same shape applies to any process that calls as itself — a webhook-handling `serve`, a scheduled job.
 
-## Migration composition root
+## Migrations at boot
 
-The migration command uses the same Postgres configuration extension. It is short-lived and owns no `ServiceGroup`, so it does not ship logs — bootstrap `StreamLogHandler.standardOutput` alone. Start the `PostgresClient` in a throwing task group, add migrations explicitly in order, apply them, then cancel the group:
+`serve --migrate-database` applies migrations after logging bootstrap and before any long-lived infrastructure exists. Each service has its own Postgres instance, so the postgres scope is read once into one executable-local configuration that derives both connections:
 
 ```swift
-try await withThrowingTaskGroup { group in
-    group.addTask {
-        await client.run()
-    }
+struct PostgresConfiguration: Sendable {
+    let host: String; let port: Int; let database: String
+    let user: String; let password: String               // the instance's own pair — the owner
+    let serviceUser: String; let servicePassword: String // the confined role serve enters as
 
-    let migrations = DatabaseMigrations()
-    await migrations.add(CreateServiceRole(role: serviceRole, password: servicePassword, database: database))
-    await migrations.add(CreateItemsTable())
+    init(config: ConfigReader) throws { /* the one place the scope is read */ }
 
-    try await migrations.apply(client: client, logger: logger, dryRun: false)
-    group.cancelAll()
+    var owner: PostgresClient.Configuration { /* username: user */ }
+    var service: PostgresClient.Configuration { /* username: serviceUser */ }
 }
 ```
 
-The migration command connects as the owner and also reads `POSTGRES_SERVICE_ROLE` (a default of `<service>_service` is fine) and `POSTGRES_SERVICE_PASSWORD` (required) for `CreateServiceRole`. Every other command connects as the service role: its `POSTGRES_USER` and `POSTGRES_PASSWORD` are the service role's, not the owner's.
+The owner client lives exactly as long as the apply, through a scoped helper that starts it in a task group and cancels it when the operation returns:
+
+```swift
+if migrateDatabase {
+    try await PostgresClient.withClient(configuration: postgres.owner, logger: logger) { client in
+        try await Migrations(client: client, configuration: postgres, logger: logger).run()
+    }
+}
+```
+
+`Migrations.run()` adds the list explicitly in order — `CreateServiceRole` first, from the service pair — and applies it. The long-lived client the `ServiceGroup` owns is built from `postgres.service` and never holds owner credentials; the owner pair does sit in the serving container's environment, which is the accepted price of migrating in-process — the *process* that serves never connects with it.
 
 ## Operator commands
 
-An operation that must never be reachable over the network — issuing a service credential, rotating a key — is a subcommand, run by an operator against the service's own database. It follows the migration root's shape: short-lived, stdout logging, a task group around the client. Print exactly the value the operator needs on standard output and nothing else there, so a redirect captures it. See *Service credentials and issuance* in [identity-and-access.md](identity-and-access.md).
+An operation that must never be reachable over the network — issuing a service credential, rotating a key — is a subcommand, run by an operator against the service's own database. It follows the boot-migration shape: short-lived, stdout logging, a scoped client around the work. Print exactly the value the operator needs on standard output and nothing else there, so a redirect captures it. See *Service credentials and issuance* in [identity-and-access.md](identity-and-access.md).

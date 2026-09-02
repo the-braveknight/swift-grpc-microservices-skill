@@ -64,7 +64,7 @@ Prefer additive evolution. Reserve removed fields and names. Do not modify a rel
 5. Reintroduce the Core `Database` protocol and use-case context protocols.
 6. Copy and adapt Postgres repositories, statements, and migrations. Remove the old schema qualifier because the new service owns the database. Let the database stamp creation dates and generate identifiers. Make `CreateServiceRole` the first migration.
 7. Add gRPC services and colocated `+Protobuf` conversions, with per-RPC identity checks.
-8. Add `serve` and `database migrate` composition roots.
+8. Add the `serve` composition root, with boot migrations behind `--migrate-database`.
 9. Add the service's environment pieces per [environment.md](environment.md).
 10. Build the entire producer.
 
@@ -86,8 +86,8 @@ Do not leave the old Postgres database/context variable in composition once no l
 
 ## 6. Wire deployment
 
-1. Add the service's database to `postgres-init` and its role credentials to `.env.example`.
-2. Add `<service>-migrate`, gated on `postgres-init`.
+1. Add the service's own Postgres instance and its owner and service-role credentials to `.env.example`.
+2. Give the service `command: ["serve", "--migrate-database"]`, gated on its instance's health check.
 3. Add `<service>`, gated on successful migration and available only on the internal network.
 4. Add the service to the certificate script's process list, merge `*tls`, mount its own subdirectory of the certificate volume read-only, and gate it on `tls-init`.
 5. Add consumer `GRPC_<SERVICE>_HOST` and `_PORT` using the producer's name on the internal network, and a consumer `depends_on` for startup ordering.

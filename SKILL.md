@@ -77,7 +77,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 19. Make every remotely retryable mutation idempotent in the service that owns the side effect: a stable, namespaced key, enforced atomically by the database or the provider, returning the prior outcome for the same canonical input and rejecting reuse with different input. Never use the key as authorization or as an entity identifier.
 20. Guard every state transition in the `WHERE` clause and treat the absent row as the lost race. Carry only the destination state in the command and derive its one legal predecessor from the state enum.
 21. Enforce liveness-scoped uniqueness with a partial unique index over the active states, and name a repository error for the constraint that exists.
-22. Make `CreateServiceRole` the first migration of every service. Migrations run as the owner; every other command connects as the service role.
+22. Make `CreateServiceRole` the first migration of every service. Migrations run as the instance's owner (`POSTGRES_USER`, verbatim); everything that serves or reads data connects as the service role (`POSTGRES_SERVICE_USER`).
 23. Confine caller-owned rows with row-level security: policies in migrations, never a scope restated in statements; stamp each transaction with the caller's role and, for a person, user id, using bound `set_config(…, true)`; keep `NULLIF` in every policy; admit `service` beside `admin`; verify as the service role. The handler still answers what a policy cannot — `permissionDenied` for a named user who is not the caller.
 
 ### Contracts and transport
@@ -91,7 +91,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 
 ### Composition and configuration
 
-30. Name the executable after the service. `serve` is the default subcommand; `database migrate` is nested; operator commands are subcommands. A Temporal worker is not a subcommand: it is a second executable target `<Service>Worker`, product `<service>-worker`, image `<organization>-<service>-worker`, in the same package, with its own composition root and its own copies of the configuration extensions it needs.
+30. Name the executable after the service. `serve` is the default subcommand and carries `--migrate-database`, which applies migrations in-process before the server binds; there is no migrate subcommand. Operator commands are subcommands. A Temporal worker is not a subcommand: it is a second executable target `<Service>Worker`, product `<service>-worker`, image `<organization>-<service>-worker`, in the same package, with its own composition root and its own copies of the configuration extensions it needs.
 31. Construct every long-lived client, server, and worker once in the composition root, under `// MARK:` sections in the order Configuration, Logging, Infrastructure, Composition, Transport, Lifecycle, and own all of them with one `ServiceGroup` with graceful shutdown.
 32. Read configuration with `ConfigReader` scoped by concern (`postgres`, `grpc.server`, `grpc.<upstream>`, `tls`, `jwt`, `temporal`, `loki`). Require infrastructure values and secrets; default only listen address, port, and log level. Require upstream hosts and ports rather than defaulting to `localhost`.
 33. Give each configuration an `init(config:)` extension in the executable's `Configuration` folder. Configure key material by path and open the file there, failing loudly naming both the key and the path.
@@ -148,9 +148,9 @@ The rules below follow from these. When a situation is not covered, decide from 
 ### Delivery
 
 65. Two branches, two environments: every develop commit tests, publishes, and deploys to staging; every main commit tests and publishes, deploying to production once it exists. Promotion is a merge, never a steady-state cherry-pick. Deploy steps are mandatory — missing configuration fails the pipeline loudly, never skips it.
-66. Publish an image per commit: an immutable short-SHA tag that is the only thing ever deployed, plus a moving branch tag for humans and bootstrap. Build the Containerfile natively for the deployment host's architecture. Services carry no SemVer tags or releases; SemVer belongs to the contract packages.
-67. Reuse the swiftlang test workflow pinned by tag, collapsed to the single toolchain, OS, and architecture production runs, with `swift test --disable-automatic-resolution` so the committed `Package.resolved` is the build. Keep deployment mechanics in the organization's `ci` repository as tag-versioned composite actions; workflows keep declarative steps only.
-68. Run migrations as a platform one-shot pinned to the same image and wait for it before rolling serve, unconditionally — the migration library makes no-ops cheap. Migrations are expand/contract, because deploys roll back and schemas do not. Point dependabot's version updates at develop; prune the registry weekly per repository.
+66. Publish an image per commit: an immutable short-SHA tag for forensics and rollback, plus the moving branch tag the platform application tracks. Deploys are a single trigger-only step bound to plain secrets; rollback is pinning an older SHA in the platform. Build the Containerfile natively for the deployment host's architecture. Services carry no SemVer tags or releases; SemVer belongs to the contract packages.
+67. Reuse the swiftlang test workflow pinned by tag, collapsed to the single toolchain, OS, and architecture production runs, with `swift test --disable-automatic-resolution` so the committed `Package.resolved` is the build. Deploy through a SHA-pinned trigger action; centralize in the organization's `ci` repository only platform logic that actually churns.
+68. Migrate in the serving container at boot: `serve --migrate-database`, a short-lived owner client, then the confined serving client — a container cannot serve an unmigrated schema. Each service owns its Postgres instance. Migrations are expand/contract, because deploys roll back and schemas do not. Point dependabot's version updates at develop; prune the registry weekly per repository.
 
 ### Working in an existing system
 
@@ -183,7 +183,7 @@ The rules below follow from these. When a situation is not covered, decide from 
 4. Implement Postgres: context, database, statements, repositories, error translation, `CreateServiceRole` first, then ordered migrations; policies where rows belong to callers.
 5. Implement generated gRPC service conformances and feature-local `Protobuf/` conversions, with identity checks per RPC.
 6. With Temporal: Workflows, Activities, the Core workflow-client port, its Temporal adapter, and the `<Service>Worker` executable with its own composition root.
-7. Add `serve` and `database migrate` composition roots with configuration, logging, transport-security factories, and lifecycle.
+7. Add the `serve` composition root — configuration, logging, boot migrations behind `--migrate-database`, transport-security factories, lifecycle.
 8. Add the service's environment pieces per environment.md.
 9. Add the workflows, Containerfile, and dependabot configuration per delivery.md.
 10. Build the whole package, run the tests, then exercise contracts, identity paths, and infrastructure boundaries.
@@ -224,7 +224,7 @@ Do not call work complete until every applicable gate passes.
 - Every service owns a dedicated database; migrations are applied; no service-named schema exists.
 - Every entity identifier is database-generated and absent from create inputs.
 - Every retryable mutation has owner-enforced idempotency with explicit same-key/different-input conflict behavior.
-- The first migration is `CreateServiceRole`, and every command but `database migrate` connects as that role.
+- The first migration is `CreateServiceRole`; serving connects as that role, and only the boot-migration client connects as the owner.
 - An RLS service stamps every transaction and its policies were exercised as the service role with a user, another user, an administrator, and a process.
 
 **Contracts and transport**
@@ -248,7 +248,7 @@ Do not call work complete until every applicable gate passes.
 - Upstream failures reach the client as problem details with the mapped status.
 
 **Delivery**
-- Every commit to a deployment branch publishes a SHA-tagged image; the staging branch deploys it with migrations run and awaited before serve rolls.
+- Every commit to a deployment branch publishes SHA and branch tags; the staging branch's deploy trigger rolls the application, which migrates at boot before it serves.
 - CI resolves from the committed `Package.resolved` and tests the architecture production runs; a missing deploy secret or variable fails the pipeline rather than skipping the deploy.
 
 **Operations**
