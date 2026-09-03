@@ -180,6 +180,17 @@ Rows in terminal states fall out of the index, so the value frees automatically 
 
 ## Database ownership and migrations
 
+### One instance or many
+
+"Database per service" is an ownership rule, not a hardware rule: no shared tables, no cross-service joins, one service evolving each schema. It has two sound physical shapes, and the choice is per environment:
+
+- **One instance per service** — independent scaling, isolated blast radius, per-service versions and maintenance windows. The strict shape; what a managed-database-per-service production naturally gives.
+- **One shared instance, one database per service** — the standard small-to-mid-workload shape, and the right default for a single staging box: one well-tuned cluster instead of N sets of `shared_buffers`, autovacuum, and WAL writers. Postgres holds the boundary itself — there are no cross-database queries without an FDW — so a service physically cannot join into a sibling's data. One control completes it: connect rights are granted per role rather than left at Postgres's connect-to-anything default, so a leaked service credential cannot even reach a sibling's database.
+
+The environment contract makes the choice invisible to code: `POSTGRES_HOST/PORT/DB/USER/PASSWORD` describes *a database*, not an instance, so moving between shapes is an environment edit. On a shared instance the plain `POSTGRES_USER`/`POSTGRES_PASSWORD` pair is the cluster's administrator verbatim — the same "instance owner, verbatim" contract, now shared — and role names (`<service>_service`) are cluster-wide, which the naming convention already keeps unique.
+
+Consolidating existing per-service instances into one cluster is a `pg_dump --no-owner | psql` per database — with one lesson that survives the details: the rights that live *outside* a single database's dump (database-level connect grants, default privileges) do not travel, so re-establish them for the roles the new cluster actually uses, and distrust a quiet boot — a lazily-pooled service hides a missing grant until its first query.
+
 A service owns the whole database. Use unqualified names such as `items`, not `<service>.items`, and do not create a service-named schema.
 
 Name migrations for their result, such as `CreateItemsTable`. Do not prefix a migration with the service name; it already lives inside the service-owned Postgres module. Give each table its own create migration; keep that table's indexes and constraints with it rather than combining several tables into one migration. Keep migrations under `Migrations/<Entity>` and register them explicitly in dependency order in the executable's migration list, parents before children — `serve --migrate-database` applies it at boot (see *Migrations at boot* in composition.md).

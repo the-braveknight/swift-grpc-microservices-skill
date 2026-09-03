@@ -105,7 +105,13 @@ An organization `ci` repository of composite actions remains the right home for 
 
 ## Platform configuration and its traps
 
-One application per process — `<service>`, `<service>-worker` — plus a per-service Postgres instance, Docker-image sourced, environment carried per application (a platform's project-level variables are usually interpolation references, not injected values; prefer concrete values per app). Key files arrive as file mounts at the same paths the Compose environment used, so the service's configuration does not know which environment it is in.
+One application per process — `<service>`, `<service>-worker` — plus Postgres as either a per-service instance or one shared instance with a database per service (see *One instance or many* in persistence.md), Docker-image sourced. Key files arrive as file mounts at the same paths the Compose environment used, so the service's configuration does not know which environment it is in.
+
+**The project's shared environment is the source of truth.** Everything project-wide is defined once at the project level, and each application's environment *re-declares* the keys it uses as references — `KEY=${{project.KEY}}` — keeping only what is truly service-specific as literal values. Project-level variables are not auto-injected; the explicit reference is the mechanism, and it is a feature: each application's environment remains the complete, readable list of what the process receives, while every value with more than one consumer has exactly one definition.
+
+What belongs at the project level: the database cluster's address and administrator pair; the log store's URL and the log level; the TLS material paths; the token-verification public-key path; the serving host/port every gRPC process binds; the job orchestrator's address and namespace; organization-wide API keys — and the **service directory**: every service's internal host and port (`GRPC_<SERVICE>_HOST/PORT` for all of them, including single-consumer ones — an address is a fact about the project, not about whichever process happens to dial it today). What stays per application: the database name and its service-role pair, the process's credential id and secret path, its task queue, and any key only it holds. A well-factored service ends up with a handful of literal lines and references for everything else.
+
+The operational rule: references resolve at deploy, not live — changing a shared value is one project-level update followed by a stop-then-deploy of each consuming application. The same variable set, with production values, is the template for the next environment.
 
 Dokploy specifics, each learned the expensive way:
 
