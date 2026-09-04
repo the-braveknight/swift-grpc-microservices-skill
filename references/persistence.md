@@ -189,6 +189,8 @@ Rows in terminal states fall out of the index, so the value frees automatically 
 
 The environment contract makes the choice invisible to code: `POSTGRES_HOST/PORT/DB/USER/PASSWORD` describes *a database*, not an instance, so moving between shapes is an environment edit. On a shared instance the plain `POSTGRES_USER`/`POSTGRES_PASSWORD` pair is the cluster's administrator verbatim — the same "instance owner, verbatim" contract, now shared — and role names (`<service>_service`) are cluster-wide, which the naming convention already keeps unique.
 
+Either way, **a service's database exists before the service first deploys** — no service ever creates a database. On a per-service instance the image's own variables provision it; on a shared instance an administrator creates `<project>_<service>` explicitly, once, as part of provisioning the application. From there the standard two-role model applies unchanged: the service connects to its own isolated database as the owner/administrator pair for migrations at boot, and as its `<service>_service` role — created by its first migration — for serving and every other data path.
+
 Consolidating existing per-service instances into one cluster is a `pg_dump --no-owner | psql` per database — with one lesson that survives the details: the rights that live *outside* a single database's dump (database-level connect grants, default privileges) do not travel, so re-establish them for the roles the new cluster actually uses, and distrust a quiet boot — a lazily-pooled service hides a missing grant until its first query.
 
 A service owns the whole database. Use unqualified names such as `items`, not `<service>.items`, and do not create a service-named schema.
