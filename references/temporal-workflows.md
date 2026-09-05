@@ -230,7 +230,7 @@ The worker composition root owns:
 - one `TemporalWorker` with explicit workflow definitions and Activity containers;
 - one `ServiceGroup` containing the worker and all its long-lived dependencies.
 
-Use the same Temporal namespace and task queue in the server's `TemporalClient`, its workflow-client adapter, and the worker, and the same transport security in both: the stack's mTLS client factory when the Temporal server runs in the stack, TLS with the system trust roots and an API key when it is a managed engine (see *Transport security factories* in [composition.md](composition.md)). Manage the client and worker with graceful shutdown signals. Do not run a cancellation-aware reconciliation service beside the worker.
+Configure the client and the worker from the SDK's own configuration readers — `TemporalClient.Configuration(configReader:)` and `TemporalWorker.Configuration(configReader:)` over the `temporal` scope (see *Temporal worker composition root* in [composition.md](composition.md)) — with the namespace named after the deployment environment, and the same transport security in both: the stack's mTLS client factory when the Temporal server runs in the stack, TLS with the system trust roots and an API key when it is a managed engine (see *Transport security factories* in [composition.md](composition.md)). Manage the client and worker with graceful shutdown signals. Do not run a cancellation-aware reconciliation service beside the worker.
 
 ## Naming and file style
 

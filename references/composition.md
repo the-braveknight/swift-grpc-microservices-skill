@@ -58,8 +58,14 @@ TLS_TRUST_ROOTS_PATH=/run/tls/ca.pem
 JWT_PUBLIC_KEY_PATH=/run/secrets/jwt-public
 TEMPORAL_HOST=temporal
 TEMPORAL_PORT=7233
-TEMPORAL_NAMESPACE=default
-TEMPORAL_TASK_QUEUE=catalog
+TEMPORAL_CLIENT_NAMESPACE=production                      # serve — the SDK's own client keys
+TEMPORAL_CLIENT_INSTRUMENTATION_SERVERHOSTNAME=temporal
+TEMPORAL_WORKER_NAMESPACE=production                      # worker — the SDK's own worker keys
+TEMPORAL_WORKER_TASKQUEUE=catalog
+TEMPORAL_WORKER_BUILDID=production
+TEMPORAL_WORKER_CLIENT_IDENTITY=catalog-worker
+TEMPORAL_WORKER_CLIENT_INSTRUMENTATION_SERVERHOSTNAME=temporal
+TEMPORAL_WORKER_HEARTBEATINTERVALMS=60000                 # worker liveness; the SDK default disables
 LOKI_URL=http://loki:3100
 LOG_LEVEL=info
 ```
@@ -71,17 +77,17 @@ extension PostgresClient.Configuration {
     init(config: ConfigReader) throws {
         self.init(
             host: try config.requiredString(forKey: "host"),
-            port: try config.requiredInt(forKey: "port"),
+            port: config.int(forKey: "port", default: 5432),
             username: try config.requiredString(forKey: "user"),
             password: try config.requiredString(forKey: "password", isSecret: true),
-            database: try config.requiredString(forKey: "db"),
+            database: config.string(forKey: "db", default: "<project>_<service>"),
             tls: .prefer(.clientDefault)
         )
     }
 }
 ```
 
-Require infrastructure values and secrets. Defaults are acceptable for the listen address, listen port, and log level. Require an upstream's host and port rather than defaulting them: a process that quietly dials `localhost` in a container reports a misconfiguration as a connection failure minutes later, at the first request, instead of at startup.
+Require hosts and secrets; default the constants. A constant is anything that never varies by deployment: the standard mount paths (`/run/tls/{cert,key,ca}.pem`, `/run/secrets/jwt-public`), well-known ports, the listen address, the log level, and the service's *own identity* — its database name, its confined role name, and, for a process that holds one, its credential id and secret path, all derivable from the service's name by convention. Baking these into the `+ConfigReader` extensions (the environment always overrides a default) shrinks every deployment's variable set to topology and secrets. Require an upstream's host rather than defaulting it: a process that quietly dials `localhost` in a container reports a misconfiguration as a connection failure minutes later, at the first request, instead of at startup. And know what each library treats as required — a value your code used to default may be *required* by a stock configuration reader, and the missing variable then crash-loops the process at boot (the Temporal worker's task queue is the canonical example).
 
 Key material — signing keys, certificates, service credentials — is configured as a path and the file is opened here, in the composition root, never in a library. A path is the form NIOSSL and grpc-swift already take credentials in, it keeps a private key out of the environment, and it fails at startup naming the path. The rationale is in [identity-and-access.md](identity-and-access.md), *Key material in configuration*.
 
@@ -249,11 +255,7 @@ The worker owns no database (see *Worker composition* in [temporal-workflows.md]
 
 ```swift
 let temporalWorker = try TemporalWorker(
-    configuration: .init(
-        namespace: temporalConfig.string(forKey: "namespace", default: "default"),
-        taskQueue: temporalConfig.string(forKey: "taskQueue", default: "catalog"),
-        instrumentation: .init(serverHostname: temporalHost)
-    ),
+    configuration: .init(configReader: temporalConfig),
     target: .dns(
         host: temporalHost,
         port: temporalConfig.int(forKey: "port", default: 7233)
@@ -264,6 +266,8 @@ let temporalWorker = try TemporalWorker(
     logger: logger
 )
 ```
+
+The configuration comes from the SDK's **own** reader — `TemporalWorker.Configuration(configReader:)`, handed the `temporal` scope — never a hand-built one; the serve side's client is the same shape, `TemporalClient.Configuration(configReader:)`. The SDK's keys become the environment contract: the worker *requires* `TEMPORAL_WORKER_NAMESPACE`, `_TASKQUEUE`, `_BUILDID`, `_CLIENT_IDENTITY`, and `_CLIENT_INSTRUMENTATION_SERVERHOSTNAME`, and reads `_HEARTBEATINTERVALMS` optionally — set it (60000 is a sane interval) so the worker reports liveness to the engine; the SDK's default disables heartbeats entirely. The client reads `TEMPORAL_CLIENT_NAMESPACE` and `_CLIENT_INSTRUMENTATION_SERVERHOSTNAME`. Only the dial target and the transport factory remain the composition root's job.
 
 Add the worker and every long-lived dependency used by Activities to one `ServiceGroup`. Do not add a periodic database-to-Temporal reconciliation service. Temporal owns durable workflow execution.
 
