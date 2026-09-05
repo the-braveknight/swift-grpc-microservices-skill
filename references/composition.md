@@ -209,6 +209,24 @@ extension HTTP2ClientTransport.Posix.TransportSecurity {
 
 The reader is scoped to `tls`, so the operator sets `TLS_CERTIFICATE_PATH`, `TLS_PRIVATE_KEY_PATH`, and `TLS_TRUST_ROOTS_PATH`. A missing one fails at startup naming the key. Every `GRPCClient`, and the `TemporalClient` and `TemporalWorker` when the Temporal server runs inside the stack, take the client factory; the `GRPCServer` takes the server one. Do not share the file through the identity package: the shape is eight lines a service owns.
 
+**Every client waits for the connection, bounded by a deadline.** A gRPC call made while its channel is not ready fails fast by default — the error a caller hits on the first request after an idle period, a peer restart, or a rolling deploy. Enable *wait-for-ready* once as a client-wide default rather than per call: a `ServiceConfig` with one `MethodConfig` whose name is the empty-service global bucket (`MethodConfig.Name(service: "")` — the fallback the transport returns for any method with no more specific entry) applies to every method, with `waitForReady: true` and a `timeout` so a genuinely-down upstream still fails instead of hanging the caller forever.
+
+```swift
+extension ServiceConfig {
+    static let defaults = ServiceConfig(
+        methodConfig: [
+            MethodConfig(
+                names: [MethodConfig.Name(service: "")],  // "" — every method of every service
+                waitForReady: true,
+                timeout: .seconds(15)
+            )
+        ]
+    )
+}
+```
+
+Pass it as `serviceConfig:` to every client's `.http2NIOPosix`, beside the mTLS factory. Do not reach for per-RPC `CallOptions` to set this — the generated call sites are scattered through use cases and adapters, and there is no single place to set a default `CallOptions`; `ServiceConfig` is that single place. The two are the same knob at different layers: the SDK unions a call's `CallOptions` with the method's `ServiceConfig`, filling only fields the call left unset — so `ServiceConfig` is the base default and `CallOptions` stays the per-RPC override for the rare call that needs a different timeout. The `GRPCServer` transport takes no service config, and a managed engine's client (below) carries its own.
+
 **A managed workflow engine or any external endpoint is outside the stack.** The client factory is wrong on both counts for it — its trust roots are the internal CA, and the external frontend chains to a public one. Such a client uses TLS with the system trust roots and the provider's own credential, configured in that provider's scope beside its address:
 
 ```swift
